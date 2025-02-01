@@ -14,6 +14,7 @@ import torch
 import torch.nn.functional as F
 from torch import nn
 from torchtitan.models.norms import build_norm
+from fused_mlp import FusedMLP
 
 
 @dataclass
@@ -33,6 +34,9 @@ class ModelArgs:
     # `False`, each uses the total number of transformer blocks
     depth_init: bool = True
     norm_type: str = "rmsnorm"
+
+    ## Custom arguments we use to trigger optimisations for research. ##
+    fuse_mlp: bool = True  ## Triggers mlp fusion optimisation.
 
 
 def precompute_freqs_cis(dim: int, end: int, theta: float = 10000.0) -> torch.Tensor:
@@ -257,6 +261,54 @@ class FeedForward(nn.Module):
         for linear in (self.w2, self.w3):
             nn.init.trunc_normal_(linear.weight, mean=0.0, std=init_std)
 
+## This implements our custom Fused FFN. ##
+class FusedFeedForward(nn.Module):
+    """
+    FeedForward module
+
+    Args:
+        dim (int): Input dimension.
+        hidden_dim (int): Hidden dimension of the feedforward layer.
+        multiple_of (int): Value to ensure hidden dimension is a multiple of this value.
+        ffn_dim_multiplier (Optional[float]): Custom multiplier for hidden dimension. Defaults to None.
+
+    Attributes:
+        w1 (Linear): Linear transformation for the first layer.
+        w2 (Linear): Linear transformation for the second layer.
+        w3 (Linear): Linear transformation for the third layer.
+
+    """
+
+    def __init__(
+        self,
+        dim: int,
+        hidden_dim: int,
+        multiple_of: int,
+        ffn_dim_multiplier: Optional[float],
+    ):
+        super().__init__()
+        hidden_dim = int(2 * hidden_dim / 3)
+        # custom dim factor multiplier
+        if ffn_dim_multiplier is not None:
+            hidden_dim = int(ffn_dim_multiplier * hidden_dim)
+        hidden_dim = multiple_of * ((hidden_dim + multiple_of - 1) // multiple_of)
+
+        self.w1 = torch.zeros(dim, hidden_dim)
+        self.w2 = torch.zeros(hidden_dim, dim)
+        # self.w1 = nn.Linear(dim, hidden_dim, bias=False)
+        # self.w2 = nn.Linear(hidden_dim, dim, bias=False)
+        # self.w3 = nn.Linear(dim, hidden_dim, bias=False)
+
+    def forward(self, x):
+        #return self.w2(F.silu(self.w1(x)) * self.w3(x))
+        return FusedMLP(x, self.w1, self.w2)
+
+    def init_weights(self, init_std: float):
+        nn.init.trunc_normal_(self.w1, mean=0.0, std=0.02)
+        nn.init.trunc_normal(self.w2, mean=0.0, std=init_std)
+        # for linear in (self.w2, self.w3):
+        #     nn.init.trunc_normal_(linear.weight, mean=0.0, std=init_std)
+
 
 class TransformerBlock(nn.Module):
     """
@@ -283,12 +335,20 @@ class TransformerBlock(nn.Module):
         self.n_heads = model_args.n_heads
         self.dim = model_args.dim
         self.attention = Attention(model_args)
-        self.feed_forward = FeedForward(
-            dim=model_args.dim,
-            hidden_dim=4 * model_args.dim,
-            multiple_of=model_args.multiple_of,
-            ffn_dim_multiplier=model_args.ffn_dim_multiplier,
-        )
+        if model_args.fuse_mlp:
+            self.feed_forward = FusedFeedForward(
+                dim=model_args.dim,
+                hidden_dim=4 * model_args.dim,
+                multiple_of=model_args.multiple_of,
+                ffn_dim_multiplier=model_args.ffn_dim_multiplier,
+            )
+        else:
+            self.feed_forward = FeedForward(
+                dim=model_args.dim,
+                hidden_dim=4 * model_args.dim,
+                multiple_of=model_args.multiple_of,
+                ffn_dim_multiplier=model_args.ffn_dim_multiplier,
+            )
         self.layer_id = layer_id
         self.num_layers = model_args.n_layers
 
