@@ -3,7 +3,7 @@ import torch
 from typing import Tuple
 import triton
 import triton.language as tl
-from src.ops.tune import extract_fwd_params, extract_bwd_params
+from torchtitan.models.llama.tune import extract_fwd_params, extract_bwd_params
 import torch.distributed as dist
 import pdb
 

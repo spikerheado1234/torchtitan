@@ -14,7 +14,7 @@ import torch
 import torch.nn.functional as F
 from torch import nn
 from torchtitan.models.norms import build_norm
-from fused_mlp import FusedMLP
+from .fused_mlp import FusedMLP
 
 
 @dataclass
@@ -287,6 +287,7 @@ class FusedFeedForward(nn.Module):
         ffn_dim_multiplier: Optional[float],
     ):
         super().__init__()
+        print('Fused MLP initialised...')
         hidden_dim = int(2 * hidden_dim / 3)
         # custom dim factor multiplier
         if ffn_dim_multiplier is not None:
@@ -305,7 +306,7 @@ class FusedFeedForward(nn.Module):
 
     def init_weights(self, init_std: float):
         nn.init.trunc_normal_(self.w1, mean=0.0, std=0.02)
-        nn.init.trunc_normal(self.w2, mean=0.0, std=init_std)
+        nn.init.trunc_normal_(self.w2, mean=0.0, std=init_std)
         # for linear in (self.w2, self.w3):
         #     nn.init.trunc_normal_(linear.weight, mean=0.0, std=init_std)
 
