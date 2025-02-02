@@ -15,6 +15,7 @@ import torch.nn.functional as F
 from torch import nn
 from torchtitan.models.norms import build_norm
 from .fused_mlp import FusedMLP
+import pdb
 
 
 @dataclass
@@ -36,7 +37,7 @@ class ModelArgs:
     norm_type: str = "rmsnorm"
 
     ## Custom arguments we use to trigger optimisations for research. ##
-    fuse_mlp: bool = True  ## Triggers mlp fusion optimisation.
+    fuse_mlp: bool = False  ## Triggers mlp fusion optimisation.
 
 
 def precompute_freqs_cis(dim: int, end: int, theta: float = 10000.0) -> torch.Tensor:
@@ -251,14 +252,16 @@ class FeedForward(nn.Module):
 
         self.w1 = nn.Linear(dim, hidden_dim, bias=False)
         self.w2 = nn.Linear(hidden_dim, dim, bias=False)
-        self.w3 = nn.Linear(dim, hidden_dim, bias=False)
+        # self.w3 = nn.Linear(dim, hidden_dim, bias=False)
 
     def forward(self, x):
-        return self.w2(F.silu(self.w1(x)) * self.w3(x))
+        #return self.w2(F.silu(self.w1(x)) * self.w3(x))
+        return self.w2(F.relu(self.w1(x)))
 
     def init_weights(self, init_std: float):
         nn.init.trunc_normal_(self.w1.weight, mean=0.0, std=0.02)
-        for linear in (self.w2, self.w3):
+        #for linear in (self.w2, self.w3):
+        for linear in (self.w2,):
             nn.init.trunc_normal_(linear.weight, mean=0.0, std=init_std)
 
 ## This implements our custom Fused FFN. ##
@@ -287,28 +290,27 @@ class FusedFeedForward(nn.Module):
         ffn_dim_multiplier: Optional[float],
     ):
         super().__init__()
-        print('Fused MLP initialised...')
         hidden_dim = int(2 * hidden_dim / 3)
         # custom dim factor multiplier
         if ffn_dim_multiplier is not None:
             hidden_dim = int(ffn_dim_multiplier * hidden_dim)
         hidden_dim = multiple_of * ((hidden_dim + multiple_of - 1) // multiple_of)
 
-        self.w1 = torch.zeros(dim, hidden_dim)
-        self.w2 = torch.zeros(hidden_dim, dim)
-        # self.w1 = nn.Linear(dim, hidden_dim, bias=False)
-        # self.w2 = nn.Linear(hidden_dim, dim, bias=False)
+        # self.w1 = torch.empty(dim, hidden_dim)
+        # self.w2 = torch.empty(hidden_dim, dim)
+        self.w1 = nn.Linear(dim, hidden_dim, bias=False)
+        self.w2 = nn.Linear(hidden_dim, dim, bias=False)
         # self.w3 = nn.Linear(dim, hidden_dim, bias=False)
 
     def forward(self, x):
         #return self.w2(F.silu(self.w1(x)) * self.w3(x))
-        return FusedMLP(x, self.w1, self.w2)
+        return FusedMLP(x, self.w1.weight.data, self.w2.weight.data)
 
     def init_weights(self, init_std: float):
-        nn.init.trunc_normal_(self.w1, mean=0.0, std=0.02)
-        nn.init.trunc_normal_(self.w2, mean=0.0, std=init_std)
-        # for linear in (self.w2, self.w3):
-        #     nn.init.trunc_normal_(linear.weight, mean=0.0, std=init_std)
+        nn.init.trunc_normal_(self.w1.weight, mean=0.0, std=0.02)
+        #nn.init.trunc_normal_(self.w2, mean=0.0, std=init_std)
+        for linear in (self.w2,):
+            nn.init.trunc_normal_(linear.weight, mean=0.0, std=init_std)
 
 
 class TransformerBlock(nn.Module):
