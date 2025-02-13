@@ -28,6 +28,7 @@ from torchtitan.parallelisms import (
 )
 from torchtitan.profiling import maybe_enable_memory_snapshot, maybe_enable_profiling
 from torchtitan.utils import device_module, device_type
+from deepspeed.utils.timer import SynchronizedWallClockTimer
 
 
 # Enable debug tracing on failure: https://pytorch.org/docs/stable/elastic/errors.html
@@ -433,5 +434,11 @@ def main(job_config: JobConfig):
 if __name__ == "__main__":
     config = JobConfig()
     config.parse_args()
+    # print('starting memory snapshot recording')
+    # torch.cuda.memory._record_memory_history(
+    #     max_entries=100000, stacks='all')
     main(config)
+    # torch.cuda.memory._dump_snapshot('unfused_snapshot_ring_attn')
+    # torch.cuda.memory._record_memory_history(enabled=None)
+    # print(f'finishing memory snapshot recording')
     torch.distributed.destroy_process_group()

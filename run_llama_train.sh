@@ -13,8 +13,9 @@ set -ex
 NGPU=${NGPU:-"2"}
 LOG_RANK=${LOG_RANK:-0}
 ## This is for debugging only. ##
-#CONFIG_FILE=${CONFIG_FILE:-"./train_configs/debug_model.toml"}
-CONFIG_FILE=${CONFIG_FILE:-"./train_configs/llama3_8b.toml"}
+CONFIG_FILE=${CONFIG_FILE:-"./train_configs/debug_model.toml"}
+## This is for 8b evals. ##
+#CONFIG_FILE=${CONFIG_FILE:-"./train_configs/llama3_8b.toml"}
 
 overrides=""
 if [ $# -ne 0 ]; then

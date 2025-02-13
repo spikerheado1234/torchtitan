@@ -339,6 +339,7 @@ def _bwd(
     if torch.cuda.is_available():
         torch.cuda.synchronize()
 
+    outgoing_gradients = outgoing_gradients.to(incoming_gradients.dtype)
     w1_gradients = w1_gradients.to(incoming_gradients.dtype)
     w2_gradients = w2_gradients.to(incoming_gradients.dtype)
 
