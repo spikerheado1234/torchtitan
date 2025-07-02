@@ -1326,6 +1326,9 @@ def _bwd(
 
 
     if use_opt:
+        s1 = torch.cuda.Stream()
+        s2 = torch.cuda.Stream()
+        #s3 = torch.cuda.Stream()
         num_warps, num_blocks, BLOCK_Y, BLOCK_X, d_m_block_size, num_stages = extract_bwd_params_dx(
             incoming_gradients.shape[1],
             w1.shape[1], w1.shape[0]
@@ -1335,20 +1338,21 @@ def _bwd(
             triton.cdiv(N, BLOCK_Y), batch_size, 1
         )
 
-        _bwd_kernel_dx[grid_dx](
-            input_activations,
-            w1, w2, w3,
-            incoming_gradients, outgoing_gradients, 
-            N, d_ffn, d_m, batch_size,
-            input_activations.stride(0), input_activations.stride(1),
-            w1.stride(0), w1.stride(1),
-            w2.stride(0), w2.stride(1),
-            w3.stride(0), w3.stride(1),
-            incoming_gradients.stride(0), incoming_gradients.stride(1),
-            outgoing_gradients.stride(0), outgoing_gradients.stride(1),
-            ACTIVATION="bfloat16" if input_activations.dtype == torch.bfloat16 else "float32", 
-            BLOCK_Y=BLOCK_Y, BLOCK_X=BLOCK_X, d_m_block=d_m_block_size
-            )
+        with torch.cuda.stream(s1):
+            _bwd_kernel_dx[grid_dx](
+                input_activations,
+                w1, w2, w3,
+                incoming_gradients, outgoing_gradients, 
+                N, d_ffn, d_m, batch_size,
+                input_activations.stride(0), input_activations.stride(1),
+                w1.stride(0), w1.stride(1),
+                w2.stride(0), w2.stride(1),
+                w3.stride(0), w3.stride(1),
+                incoming_gradients.stride(0), incoming_gradients.stride(1),
+                outgoing_gradients.stride(0), outgoing_gradients.stride(1),
+                ACTIVATION="bfloat16" if input_activations.dtype == torch.bfloat16 else "float32", 
+                BLOCK_Y=BLOCK_Y, BLOCK_X=BLOCK_X, d_m_block=d_m_block_size
+                )
 
         num_warps, num_blocks, BLOCK_Y, BLOCK_X, d_m_block_size, num_stages = extract_bwd_params_dw2_par_ffn(
             incoming_gradients.shape[1],
@@ -1359,19 +1363,20 @@ def _bwd(
             triton.cdiv(d_ffn, BLOCK_X), 1, 1
         )
 
-        _bwd_kernel_dw2_par_ffn[grid_dw2_par_ffn](
-            input_activations,
-            w1, w3,
-            incoming_gradients, w2_gradients,
-            N, d_ffn, d_m, batch_size,
-            input_activations.stride(0), input_activations.stride(1),
-            w1.stride(0), w1.stride(1),
-            w3.stride(0), w3.stride(1),
-            incoming_gradients.stride(0), incoming_gradients.stride(1),
-            w2_gradients.stride(0), w2_gradients.stride(1),
-            ACTIVATION="bfloat16" if input_activations.dtype == torch.bfloat16 else "float32", 
-            BLOCK_Y=BLOCK_Y, BLOCK_X=BLOCK_X, d_m_block=d_m_block_size
-            )
+        with torch.cuda.stream(s1):
+            _bwd_kernel_dw2_par_ffn[grid_dw2_par_ffn](
+                input_activations,
+                w1, w3,
+                incoming_gradients, w2_gradients,
+                N, d_ffn, d_m, batch_size,
+                input_activations.stride(0), input_activations.stride(1),
+                w1.stride(0), w1.stride(1),
+                w3.stride(0), w3.stride(1),
+                incoming_gradients.stride(0), incoming_gradients.stride(1),
+                w2_gradients.stride(0), w2_gradients.stride(1),
+                ACTIVATION="bfloat16" if input_activations.dtype == torch.bfloat16 else "float32", 
+                BLOCK_Y=BLOCK_Y, BLOCK_X=BLOCK_X, d_m_block=d_m_block_size
+                )
 
         num_warps, num_blocks, BLOCK_Y, BLOCK_X, d_m_block_size, num_stages = extract_bwd_params_dw1_dw3_par_ffn(
             incoming_gradients.shape[1],
@@ -1382,21 +1387,22 @@ def _bwd(
             triton.cdiv(d_ffn, BLOCK_Y), 1, 1
         )
 
-        _bwd_kernel_dw1_dw3_par_ffn[grid_dw1_dw3](
-            input_activations,
-            w1, w2, w3,
-            incoming_gradients, w1_gradients, w3_gradients,
-            N, d_ffn, d_m, batch_size,
-            input_activations.stride(0), input_activations.stride(1),
-            w1.stride(0), w1.stride(1),
-            w2.stride(0), w2.stride(1),
-            w3.stride(0), w3.stride(1),
-            incoming_gradients.stride(0), incoming_gradients.stride(1),
-            w1_gradients.stride(0), w1_gradients.stride(1),
-            w3_gradients.stride(0), w3_gradients.stride(1),
-            ACTIVATION="bfloat16" if input_activations.dtype == torch.bfloat16 else "float32", 
-            BLOCK_Y=BLOCK_Y, BLOCK_X=BLOCK_X, d_m_block=d_m_block_size
-            )
+        with torch.cuda.stream(s2):
+            _bwd_kernel_dw1_dw3_par_ffn[grid_dw1_dw3](
+                input_activations,
+                w1, w2, w3,
+                incoming_gradients, w1_gradients, w3_gradients,
+                N, d_ffn, d_m, batch_size,
+                input_activations.stride(0), input_activations.stride(1),
+                w1.stride(0), w1.stride(1),
+                w2.stride(0), w2.stride(1),
+                w3.stride(0), w3.stride(1),
+                incoming_gradients.stride(0), incoming_gradients.stride(1),
+                w1_gradients.stride(0), w1_gradients.stride(1),
+                w3_gradients.stride(0), w3_gradients.stride(1),
+                ACTIVATION="bfloat16" if input_activations.dtype == torch.bfloat16 else "float32", 
+                BLOCK_Y=BLOCK_Y, BLOCK_X=BLOCK_X, d_m_block=d_m_block_size
+                )
     else:
         num_warps, num_blocks, BLOCK_Y, BLOCK_X, d_m_block_size, num_stages = extract_bwd_params_dx_dw2(
             incoming_gradients.shape[1],
