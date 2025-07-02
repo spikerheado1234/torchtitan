@@ -304,6 +304,7 @@ class FusedFeedForward(nn.Module):
         self.fused_fn = FusedSwigluLayer(dim, hidden_dim)
 
     def forward(self, x):
+        ## Uncomment whichver function you'd like to test out. ##
         #return self.w2(F.silu(self.w1(x)) * self.w3(x))
         return self.fused_fn(x)
 
