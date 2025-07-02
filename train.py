@@ -29,6 +29,7 @@ from torchtitan.parallelisms import (
 from torchtitan.profiling import maybe_enable_memory_snapshot, maybe_enable_profiling
 from torchtitan.utils import device_module, device_type
 from deepspeed.utils.timer import SynchronizedWallClockTimer
+from torch.autograd.profiler import record_function
 
 
 # Enable debug tracing on failure: https://pytorch.org/docs/stable/elastic/errors.html
@@ -307,12 +308,14 @@ def main(job_config: JobConfig):
             else:
                 # Non-PP forward / backward
                 with train_context(optional_context_parallel_ctx):
-                    pred = model(input_ids)
+                    with record_function("## forward ##"):
+                        pred = model(input_ids)
                     loss = loss_fn(pred, labels)
                     # pred.shape=(bs, seq_len, vocab_size)
                     # need to free to before bwd to avoid peaking memory
                     del pred
-                    loss.backward()
+                    with record_function("## backward ##"):
+                        loss.backward()
 
             # clip gradients
             utils.clip_grad_norm_(
@@ -327,8 +330,9 @@ def main(job_config: JobConfig):
 
             # optimizer step
             checkpoint.maybe_wait_for_staging()
-            optimizers.step()
-            lr_schedulers.step()
+            with record_function("## optimizer ##"):
+                optimizers.step()
+                lr_schedulers.step()
 
             # calculate float8 dynamic amax/scale for all-parameter for FSDP2
             # it issues a single all-reduce for all parameters at once for better performance
@@ -438,7 +442,7 @@ if __name__ == "__main__":
     # torch.cuda.memory._record_memory_history(
     #     max_entries=100000, stacks='all')
     main(config)
-    # torch.cuda.memory._dump_snapshot('unfused_snapshot_ring_attn')
+    # torch.cuda.memory._dump_snapshot('unfused_snapshot_ring_attn_labeled')
     # torch.cuda.memory._record_memory_history(enabled=None)
     # print(f'finishing memory snapshot recording')
     torch.distributed.destroy_process_group()

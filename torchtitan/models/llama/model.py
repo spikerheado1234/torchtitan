@@ -37,7 +37,7 @@ class ModelArgs:
     norm_type: str = "rmsnorm"
 
     ## Custom arguments we use to trigger optimisations for research. ##
-    fuse_mlp: bool = False  ## Triggers mlp fusion optimisation.
+    fuse_mlp: bool = True  ## Triggers mlp fusion optimisation.
 
 
 def precompute_freqs_cis(dim: int, end: int, theta: float = 10000.0) -> torch.Tensor:
@@ -300,9 +300,11 @@ class FusedFeedForward(nn.Module):
         # self.w2 = torch.empty(hidden_dim, dim)
         self.w1 = nn.Linear(dim, hidden_dim, bias=False)
         self.w2 = nn.Linear(hidden_dim, dim, bias=False)
-        # self.w3 = nn.Linear(dim, hidden_dim, bias=False)
+        self.relu = torch.nn.ReLU()
+        #self.w3 = nn.Linear(dim, hidden_dim, bias=False)
 
     def forward(self, x):
+        #return self.w2(self.relu(self.w1(x)))
         #return self.w2(F.silu(self.w1(x)) * self.w3(x))
         return FusedMLP(x, self.w1.weight.data, self.w2.weight.data)
 

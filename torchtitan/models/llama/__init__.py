@@ -15,7 +15,7 @@ llama3_configs = {
     ## Here, we overload the debug model to have one Llama 8bn layer only. ##
     "debugmodel": ModelArgs(
         dim=4096,
-        n_layers=1,
+        n_layers=2,
         n_heads=32,
         n_kv_heads=8,
         ffn_dim_multiplier=1.3,
