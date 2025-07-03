@@ -113,6 +113,18 @@ def extract_bwd_params_dw1_dw3_par_ffn(N, d_ffn, d_m):
     num_warps = 8
     return (num_warps, tbs, BLOCK_Y, BLOCK_X, d_m_block, num_stages)
 
+def extract_bwd_params_dw1_dw2_dw3_par_ffn(N, d_ffn, d_m):
+    """ Returns tuple of (num warps, num blocks, BLOCK Y, BLOCK X, d_m block size, num stages)
+    """
+    ## This is a testing configuration only. ##
+    BLOCK_Y = 32
+    BLOCK_X = 128
+    tbs = int(triton.cdiv(d_ffn, BLOCK_X))
+    d_m_block = 32
+    num_stages = 1
+    num_warps = 8
+    return (num_warps, tbs, BLOCK_Y, BLOCK_X, d_m_block, num_stages)
+
 ## Here, the tiling for the two kernels is different. ##
 def extract_bwd_params_opt(N, d_ffn, d_m):
     """ Returns tuple of (num warps, num blocks, BLOCK Y, BLOCK X, d_m block size, num stages)
