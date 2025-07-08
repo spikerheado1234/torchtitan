@@ -296,7 +296,7 @@ class FusedFeedForward(nn.Module):
         if ffn_dim_multiplier is not None:
             hidden_dim = int(ffn_dim_multiplier * hidden_dim)
         hidden_dim = multiple_of * ((hidden_dim + multiple_of - 1) // multiple_of)
-        hidden_dim = 4864
+        #hidden_dim = 4864
 
         ## Figure out a way to exactly match everything. ##
         self.w1 = nn.Linear(dim, hidden_dim, bias=False)
@@ -308,8 +308,8 @@ class FusedFeedForward(nn.Module):
 
     def forward(self, x):
         ## Uncomment whichver function you'd like to test out. ##
-        #return self.w2(F.silu(self.w1(x)) * self.w3(x))
-        return self.fused_fn(x)
+        return self.w2(F.silu(self.w1(x)) * self.w3(x))
+        #return self.fused_fn(x)
 
     def init_weights(self, init_std: float):
         nn.init.trunc_normal_(self.w1.weight, mean=0.0, std=0.02)
