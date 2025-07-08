@@ -13,6 +13,7 @@ from typing import Optional, Tuple
 import torch
 import torch.nn.functional as F
 from torch import nn
+from torch.utils.checkpoint import checkpoint
 from torchtitan.models.norms import build_norm
 from .fused_mlp import FusedMLP
 from .fused_mlp_swiglu import FusedSwigluLayer
@@ -349,6 +350,7 @@ class TransformerBlock(nn.Module):
                 multiple_of=model_args.multiple_of,
                 ffn_dim_multiplier=model_args.ffn_dim_multiplier,
             )
+            self.checkpointed_ffn = lambda inps: checkpoint(self.feed_forward, inps, use_reentrant=False)
         else:
             self.feed_forward = FeedForward(
                 dim=model_args.dim,
@@ -388,7 +390,8 @@ class TransformerBlock(nn.Module):
 
         """
         h = x + self.attention(self.attention_norm(x), freqs_cis)
-        out = h + self.feed_forward(self.ffn_norm(h))
+        #out = h + self.feed_forward(self.ffn_norm(h))
+        out = h + self.checkpointed_ffn(self.ffn_norm(h)) ## This is for checkpointed baseline.
         return out
 
     def init_weights(self):
