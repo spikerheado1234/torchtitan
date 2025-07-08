@@ -3,7 +3,7 @@ import torch
 from typing import Tuple
 import triton
 import triton.language as tl
-from src.ops.tune import extract_fwd_params, extract_bwd_params_dx_dw2, \
+from torchtitan.models.llama.tune import extract_fwd_params, extract_bwd_params_dx_dw2, \
         extract_bwd_params_dw1_dw3, extract_bwd_params_dx, extract_bwd_params_dw2, \
         extract_bwd_params_dw2_par_ffn, extract_bwd_params_dw1_dw3_par_ffn, \
         extract_bwd_params_dw1_dw2_dw3_par_ffn
@@ -66,7 +66,7 @@ def get_cuda_autotune_config_bwd():
 
     cnfgs = []
 
-    ## Dump best configuration here: 
+    ## Dump best configuration here:
 
     for y in block_y_params:
         for x in block_x_params:
@@ -273,7 +273,7 @@ def _bwd_kernel_dw1_dw2_dw3_par_ffn(
     ## Weight matrices. ##
     w1_ptr, w2_ptr, w3_ptr,
     ## Gradient matrices. ##
-    incoming_grads_ptr, 
+    incoming_grads_ptr,
     dw1_ptr, dw2_ptr, dw3_ptr,
     ## Dimensions of the overall computation. ##
     N: tl.constexpr, d_ffn: tl.constexpr, d_m: tl.constexpr, batch_size: tl.constexpr,
@@ -281,7 +281,7 @@ def _bwd_kernel_dw1_dw2_dw3_par_ffn(
 
     ## Strides of input activations. ##
     ## Inputs reshaped to 2-d tensor. ##
-    stride_inp_a: tl.constexpr, stride_inp_b: tl.constexpr, 
+    stride_inp_a: tl.constexpr, stride_inp_b: tl.constexpr,
 
     ## Strides of weight matrices. ##
     stride_w1_a: tl.constexpr, stride_w1_b: tl.constexpr,
@@ -289,7 +289,7 @@ def _bwd_kernel_dw1_dw2_dw3_par_ffn(
     stride_w3_a: tl.constexpr, stride_w3_b: tl.constexpr,
 
     ## Strides of gradient matrices. ##
-    stride_incoming_grads_a: tl.constexpr, stride_incoming_grads_b: tl.constexpr, 
+    stride_incoming_grads_a: tl.constexpr, stride_incoming_grads_b: tl.constexpr,
     stride_dw1_a: tl.constexpr, stride_dw1_b: tl.constexpr,
     stride_dw2_a: tl.constexpr, stride_dw2_b: tl.constexpr,
     stride_dw3_a: tl.constexpr, stride_dw3_b: tl.constexpr,
@@ -352,7 +352,7 @@ def _bwd_kernel_dw1_dw2_dw3_par_ffn(
         o1 = tl.zeros((BLOCK_Y, BLOCK_X), dtype=tl.float32)
         o2 = tl.zeros((BLOCK_Y, BLOCK_X), dtype=tl.float32)
         do4 = tl.zeros((BLOCK_Y, BLOCK_X), dtype=tl.float32)
-        for k in tl.range(0, tl.cdiv(d_m, d_m_block)):  
+        for k in tl.range(0, tl.cdiv(d_m, d_m_block)):
             ## First, we load the data from the input activations. ##
             activations = tl.load(activation_ptrs, mask=( \
                                     (tl.arange(0, BLOCK_Y)[:, None] + j * BLOCK_Y < N * batch_size) \
@@ -392,7 +392,7 @@ def _bwd_kernel_dw1_dw2_dw3_par_ffn(
         ## All of these are of size: (BLOCK_Y, BLOCK_X).
         sig_o1 = tl.sigmoid(o1)
         o3 = o1 * sig_o1
-        o4 = o3 * o2 
+        o4 = o3 * o2
         do2 = do4 * o3
         do3 = do4 * o2
         do1 = do3 * (sig_o1 + o3 * (tl.full((BLOCK_Y, BLOCK_X), 1, tl.float32) - sig_o1))
@@ -426,14 +426,14 @@ def _bwd_kernel_dw1_dw2_dw3_par_ffn(
 
         dw2_ptrs = dw2_ptr + tl.arange(0, d_m_block)[None, :] * stride_dw2_b \
                         + tl.arange(0, BLOCK_X)[:, None] * stride_dw2_a \
-                        + bid_x * BLOCK_X * stride_dw2_a 
+                        + bid_x * BLOCK_X * stride_dw2_a
 
         ## Compute the answers. ##
         for k in tl.range(0, tl.cdiv(d_m, d_m_block)):
 
             activs = tl.load(activation_ptrs, mask=(\
                         (tl.arange(0, BLOCK_Y)[:, None] + j * BLOCK_Y < batch_size * N) & \
-                        (tl.arange(0, d_m_block)[None, :] + k * d_m_block < d_m) 
+                        (tl.arange(0, d_m_block)[None, :] + k * d_m_block < d_m)
                 ), other=0.0)
             do5s = tl.load(do5_ptrs, mask= \
                             (tl.arange(0, BLOCK_Y)[:, None] + j * BLOCK_Y < N * batch_size) & \
@@ -448,12 +448,12 @@ def _bwd_kernel_dw1_dw2_dw3_par_ffn(
             ## Write to dw3 and dw2 memory locations. ##
             _load_add_store(dw1s, dw1_ptrs, mask=(\
                             (tl.arange(0, BLOCK_X)[None, :] + bid_x * BLOCK_X < d_ffn) & \
-                            (tl.arange(0, d_m_block)[:, None] + k * d_m_block < d_m) 
+                            (tl.arange(0, d_m_block)[:, None] + k * d_m_block < d_m)
                 ))
 
             _load_add_store(dw3s, dw3_ptrs, mask=(\
                             (tl.arange(0, BLOCK_X)[None, :] + bid_x * BLOCK_X < d_ffn) & \
-                            (tl.arange(0, d_m_block)[:, None] + k * d_m_block < d_m) 
+                            (tl.arange(0, d_m_block)[:, None] + k * d_m_block < d_m)
                 ))
             _load_add_store(dw2s, dw2_ptrs, mask=(\
                     (tl.arange(0, d_m_block)[None, :] + k * d_m_block < d_m) & \
@@ -475,7 +475,7 @@ def _bwd_kernel_dw1_dw3_par_ffn(
     ## Weight matrices. ##
     w1_ptr, w2_ptr, w3_ptr,
     ## Gradient matrices. ##
-    incoming_grads_ptr, 
+    incoming_grads_ptr,
     dw1_ptr, dw3_ptr,
     ## Dimensions of the overall computation. ##
     N: tl.constexpr, d_ffn: tl.constexpr, d_m: tl.constexpr, batch_size: tl.constexpr,
@@ -483,7 +483,7 @@ def _bwd_kernel_dw1_dw3_par_ffn(
 
     ## Strides of input activations. ##
     ## Inputs reshaped to 2-d tensor. ##
-    stride_inp_a: tl.constexpr, stride_inp_b: tl.constexpr, 
+    stride_inp_a: tl.constexpr, stride_inp_b: tl.constexpr,
 
     ## Strides of weight matrices. ##
     stride_w1_a: tl.constexpr, stride_w1_b: tl.constexpr,
@@ -491,7 +491,7 @@ def _bwd_kernel_dw1_dw3_par_ffn(
     stride_w3_a: tl.constexpr, stride_w3_b: tl.constexpr,
 
     ## Strides of gradient matrices. ##
-    stride_incoming_grads_a: tl.constexpr, stride_incoming_grads_b: tl.constexpr, 
+    stride_incoming_grads_a: tl.constexpr, stride_incoming_grads_b: tl.constexpr,
     stride_dw1_a: tl.constexpr, stride_dw1_b: tl.constexpr,
     stride_dw3_a: tl.constexpr, stride_dw3_b: tl.constexpr,
 
@@ -553,7 +553,7 @@ def _bwd_kernel_dw1_dw3_par_ffn(
         o1 = tl.zeros((BLOCK_Y, BLOCK_X), dtype=tl.float32)
         o2 = tl.zeros((BLOCK_Y, BLOCK_X), dtype=tl.float32)
         do4 = tl.zeros((BLOCK_Y, BLOCK_X), dtype=tl.float32)
-        for k in tl.range(0, tl.cdiv(d_m, d_m_block)):  
+        for k in tl.range(0, tl.cdiv(d_m, d_m_block)):
             ## First, we load the data from the input activations. ##
             activations = tl.load(activation_ptrs, mask=( \
                                     (tl.arange(0, BLOCK_Y)[:, None] + j * BLOCK_Y < N * batch_size) \
@@ -593,7 +593,7 @@ def _bwd_kernel_dw1_dw3_par_ffn(
         ## All of these are of size: (BLOCK_Y, BLOCK_X).
         sig_o1 = tl.sigmoid(o1)
         o3 = o1 * sig_o1
-        o4 = o3 * o2 
+        o4 = o3 * o2
         do2 = do4 * o3
         do3 = do4 * o2
         do1 = do3 * (sig_o1 + o3 * (tl.full((BLOCK_Y, BLOCK_X), 1, tl.float32) - sig_o1))
@@ -626,7 +626,7 @@ def _bwd_kernel_dw1_dw3_par_ffn(
 
             activs = tl.load(activation_ptrs, mask=(\
                         (tl.arange(0, BLOCK_Y)[:, None] + j * BLOCK_Y < batch_size * N) & \
-                        (tl.arange(0, d_m_block)[None, :] + k * d_m_block < d_m) 
+                        (tl.arange(0, d_m_block)[None, :] + k * d_m_block < d_m)
                 ), other=0.0)
 
             dw3s = tl.dot(tl.trans(activs), do2) ## Size: (d_m_block, BLOCK_X)
@@ -635,12 +635,12 @@ def _bwd_kernel_dw1_dw3_par_ffn(
             ## Write to dw3 and dw2 memory locations. ##
             _load_add_store(dw1s, dw1_ptrs, mask=(\
                             (tl.arange(0, BLOCK_X)[None, :] + bid_x * BLOCK_X < d_ffn) & \
-                            (tl.arange(0, d_m_block)[:, None] + k * d_m_block < d_m) 
+                            (tl.arange(0, d_m_block)[:, None] + k * d_m_block < d_m)
                 ))
 
             _load_add_store(dw3s, dw3_ptrs, mask=(\
                             (tl.arange(0, BLOCK_X)[None, :] + bid_x * BLOCK_X < d_ffn) & \
-                            (tl.arange(0, d_m_block)[:, None] + k * d_m_block < d_m) 
+                            (tl.arange(0, d_m_block)[:, None] + k * d_m_block < d_m)
                 ))
 
             activation_ptrs += d_m_block * stride_inp_b
@@ -659,7 +659,7 @@ def _bwd_kernel_dw1_dw3(
     ## Weight matrices. ##
     w1_ptr, w2_ptr, w3_ptr,
     ## Gradient matrices. ##
-    incoming_grads_ptr, 
+    incoming_grads_ptr,
     dw1_ptr, dw3_ptr,
     ## Dimensions of the overall computation. ##
     N: tl.constexpr, d_ffn: tl.constexpr, d_m: tl.constexpr, batch_size: tl.constexpr,
@@ -667,7 +667,7 @@ def _bwd_kernel_dw1_dw3(
 
     ## Strides of input activations. ##
     ## Inputs reshaped to 2-d tensor. ##
-    stride_inp_a: tl.constexpr, stride_inp_b: tl.constexpr, 
+    stride_inp_a: tl.constexpr, stride_inp_b: tl.constexpr,
 
     ## Strides of weight matrices. ##
     stride_w1_a: tl.constexpr, stride_w1_b: tl.constexpr,
@@ -675,7 +675,7 @@ def _bwd_kernel_dw1_dw3(
     stride_w3_a: tl.constexpr, stride_w3_b: tl.constexpr,
 
     ## Strides of gradient matrices. ##
-    stride_incoming_grads_a: tl.constexpr, stride_incoming_grads_b: tl.constexpr, 
+    stride_incoming_grads_a: tl.constexpr, stride_incoming_grads_b: tl.constexpr,
     stride_dw1_a: tl.constexpr, stride_dw1_b: tl.constexpr,
     stride_dw3_a: tl.constexpr, stride_dw3_b: tl.constexpr,
 
@@ -740,7 +740,7 @@ def _bwd_kernel_dw1_dw3(
         o1 = tl.zeros((BLOCK_Y, BLOCK_X), dtype=tl.float32)
         o2 = tl.zeros((BLOCK_Y, BLOCK_X), dtype=tl.float32)
         do4 = tl.zeros((BLOCK_Y, BLOCK_X), dtype=tl.float32)
-        for k in tl.range(0, tl.cdiv(d_m, d_m_block)):  
+        for k in tl.range(0, tl.cdiv(d_m, d_m_block)):
             ## First, we load the data from the input activations. ##
             activations = tl.load(activation_ptrs, mask=( \
                                     (tl.arange(0, BLOCK_Y)[:, None] + bid_x * BLOCK_Y + batch * N < N * batch_size) \
@@ -780,7 +780,7 @@ def _bwd_kernel_dw1_dw3(
         ## All of these are of size: (BLOCK_Y, BLOCK_X).
         sig_o1 = tl.sigmoid(o1)
         o3 = o1 * sig_o1
-        o4 = o3 * o2 
+        o4 = o3 * o2
         do2 = do4 * o3
         do3 = do4 * o2
         do1 = do3 * (sig_o1 + o3 * (tl.full((BLOCK_Y, BLOCK_X), 1, tl.float32) - sig_o1))
@@ -813,7 +813,7 @@ def _bwd_kernel_dw1_dw3(
 
             activs = tl.load(activation_ptrs, mask=(\
                         (tl.arange(0, BLOCK_Y)[:, None] + bid_x * BLOCK_Y + batch * N < batch_size * N) & \
-                        (tl.arange(0, d_m_block)[None, :] + k * d_m_block < d_m) 
+                        (tl.arange(0, d_m_block)[None, :] + k * d_m_block < d_m)
                 ), other=0.0)
             dw3s = tl.dot(tl.trans(activs), do2) ## Size: (d_m_block, BLOCK_X)
             dw1s = tl.dot(tl.trans(activs), do1) ## Size: (d_m_block, BLOCK_X)
@@ -821,12 +821,12 @@ def _bwd_kernel_dw1_dw3(
             ## Write to dw3 and dw2 memory locations. ##
             tl.atomic_add(dw1_ptrs, dw1s.to(tl.float32), mask=(\
                             (tl.arange(0, BLOCK_X)[None, :] + j * BLOCK_X < d_ffn) & \
-                            (tl.arange(0, d_m_block)[:, None] + k * d_m_block < d_m) 
+                            (tl.arange(0, d_m_block)[:, None] + k * d_m_block < d_m)
                 ))
 
             tl.atomic_add(dw3_ptrs, dw3s.to(tl.float32), mask=(\
                             (tl.arange(0, BLOCK_X)[None, :] + j * BLOCK_X < d_ffn) & \
-                            (tl.arange(0, d_m_block)[:, None] + k * d_m_block < d_m) 
+                            (tl.arange(0, d_m_block)[:, None] + k * d_m_block < d_m)
                 ))
 
             activation_ptrs += d_m_block * stride_inp_b
@@ -841,15 +841,15 @@ def _bwd_kernel_dx(
     ## Weight matrices. ##
     w1_ptr, w2_ptr, w3_ptr,
     ## Gradient matrices. ##
-    incoming_grads_ptr, 
-    dx_ptr, 
+    incoming_grads_ptr,
+    dx_ptr,
     ## Dimensions of the overall computation. ##
     N: tl.constexpr, d_ffn: tl.constexpr, d_m: tl.constexpr, batch_size: tl.constexpr,
     ## Strides. ##
 
     ## Strides of input activations. ##
     ## Inputs reshaped to 2-d tensor. ##
-    stride_inp_a: tl.constexpr, stride_inp_b: tl.constexpr, 
+    stride_inp_a: tl.constexpr, stride_inp_b: tl.constexpr,
 
     ## Strides of weight matrices. ##
     stride_w1_a: tl.constexpr, stride_w1_b: tl.constexpr,
@@ -857,7 +857,7 @@ def _bwd_kernel_dx(
     stride_w3_a: tl.constexpr, stride_w3_b: tl.constexpr,
 
     ## Strides of gradient matrices. ##
-    stride_incoming_grads_a: tl.constexpr, stride_incoming_grads_b: tl.constexpr, 
+    stride_incoming_grads_a: tl.constexpr, stride_incoming_grads_b: tl.constexpr,
     stride_dx_a: tl.constexpr, stride_dx_b: tl.constexpr,
 
     ## Lastly, the activation function. ##
@@ -921,7 +921,7 @@ def _bwd_kernel_dx(
         o1 = tl.zeros((BLOCK_Y, BLOCK_X), dtype=tl.float32)
         o2 = tl.zeros((BLOCK_Y, BLOCK_X), dtype=tl.float32)
         do4 = tl.zeros((BLOCK_Y, BLOCK_X), dtype=tl.float32)
-        for k in tl.range(0, tl.cdiv(d_m, d_m_block)):  
+        for k in tl.range(0, tl.cdiv(d_m, d_m_block)):
             ## First, we load the data from the input activations. ##
             activations = tl.load(activation_ptrs, mask=( \
                                     (tl.arange(0, BLOCK_Y)[:, None] + bid_x * BLOCK_Y + batch * N < N * batch_size) \
@@ -977,11 +977,11 @@ def _bwd_kernel_dx(
         weight_one_ptrs = w1_ptr + tl.arange(0, d_m_block)[:, None] * stride_w1_a \
                                  + tl.arange(0, BLOCK_X)[None, :] * stride_w1_b \
                                  + j * BLOCK_X
-        
+
         dx_ptrs = dx_ptr + tl.arange(0, BLOCK_Y)[:, None] * stride_dx_a \
                          + tl.arange(0, d_m_block)[None, :] * stride_dx_b \
                          + bid_x * BLOCK_Y * stride_dx_a \
-                         + batch * N * d_m 
+                         + batch * N * d_m
 
         ## Compute the answers. ##
         for k in tl.range(0, tl.cdiv(d_m, d_m_block)):
@@ -992,7 +992,7 @@ def _bwd_kernel_dx(
 
             w1s = tl.load(weight_one_ptrs, mask=(\
                             (tl.arange(0, d_m_block)[:, None] + k * d_m_block < d_m) & \
-                            (tl.arange(0, BLOCK_X)[None, :] + j * BLOCK_X < d_ffn) 
+                            (tl.arange(0, BLOCK_X)[None, :] + j * BLOCK_X < d_ffn)
                 ))
 
             ## Mat-mul. ##
@@ -1001,7 +1001,7 @@ def _bwd_kernel_dx(
             ## Load add store to dx. ##
             _load_add_store(dx, dx_ptrs, mask=(\
                     (tl.arange(0, BLOCK_Y)[:, None] + bid_x * BLOCK_Y + batch * N < N * batch_size) & \
-                    (tl.arange(0, d_m_block)[None, :] + k * d_m_block < d_m) 
+                    (tl.arange(0, d_m_block)[None, :] + k * d_m_block < d_m)
                 ))
 
             weight_three_ptrs += d_m_block * stride_w3_a
@@ -1017,7 +1017,7 @@ def _bwd_kernel_dw2_par_ffn(
     ## Weight matrices. ##
     w1_ptr, w3_ptr,
     ## Gradient matrices. ##
-    incoming_grads_ptr, 
+    incoming_grads_ptr,
     dw2_ptr,
     ## Dimensions of the overall computation. ##
     N: tl.constexpr, d_ffn: tl.constexpr, d_m: tl.constexpr, batch_size: tl.constexpr,
@@ -1025,14 +1025,14 @@ def _bwd_kernel_dw2_par_ffn(
 
     ## Strides of input activations. ##
     ## Inputs reshaped to 2-d tensor. ##
-    stride_inp_a: tl.constexpr, stride_inp_b: tl.constexpr, 
+    stride_inp_a: tl.constexpr, stride_inp_b: tl.constexpr,
 
     ## Strides of weight matrices. ##
     stride_w1_a: tl.constexpr, stride_w1_b: tl.constexpr,
     stride_w3_a: tl.constexpr, stride_w3_b: tl.constexpr,
 
     ## Strides of gradient matrices. ##
-    stride_incoming_grads_a: tl.constexpr, stride_incoming_grads_b: tl.constexpr, 
+    stride_incoming_grads_a: tl.constexpr, stride_incoming_grads_b: tl.constexpr,
     stride_dw2_a: tl.constexpr, stride_dw2_b: tl.constexpr,
 
     ## Lastly, the activation function. ##
@@ -1084,7 +1084,7 @@ def _bwd_kernel_dw2_par_ffn(
 
         o1 = tl.zeros((BLOCK_Y, BLOCK_X), dtype=tl.float32)
         o2 = tl.zeros((BLOCK_Y, BLOCK_X), dtype=tl.float32)
-        for k in tl.range(0, tl.cdiv(d_m, d_m_block)):  
+        for k in tl.range(0, tl.cdiv(d_m, d_m_block)):
             ## First, we load the data from the input activations. ##
             activations = tl.load(activation_ptrs, mask=( \
                                     (tl.arange(0, BLOCK_Y)[:, None] + j * BLOCK_Y < N * batch_size) \
@@ -1110,7 +1110,7 @@ def _bwd_kernel_dw2_par_ffn(
         ## All of these are of size: (BLOCK_Y, BLOCK_X).
         sig_o1 = tl.sigmoid(o1)
         o3 = o1 * sig_o1
-        o4 = o3 * o2 
+        o4 = o3 * o2
         ## Next, we have to downcast the intermediate activations to the pertinent data-type prior to second mat-mul. ##
         if ACTIVATION == "bfloat16":
             o4 = o4.to(tl.bfloat16) ## Size: (BLOCK_Y, BLOCK_X)
@@ -1122,7 +1122,7 @@ def _bwd_kernel_dw2_par_ffn(
 
         dw2_ptrs = dw2_ptr + tl.arange(0, d_m_block)[None, :] * stride_dw2_b \
                         + tl.arange(0, BLOCK_X)[:, None] * stride_dw2_a \
-                        + bid_x * BLOCK_X * stride_dw2_a 
+                        + bid_x * BLOCK_X * stride_dw2_a
 
         ## Compute the answers. ##
         for k in tl.range(0, tl.cdiv(d_m, d_m_block)):
@@ -1150,7 +1150,7 @@ def _bwd_kernel_dw2(
     ## Weight matrices. ##
     w1_ptr, w3_ptr,
     ## Gradient matrices. ##
-    incoming_grads_ptr, 
+    incoming_grads_ptr,
     dw2_ptr,
     ## Dimensions of the overall computation. ##
     N: tl.constexpr, d_ffn: tl.constexpr, d_m: tl.constexpr, batch_size: tl.constexpr,
@@ -1158,14 +1158,14 @@ def _bwd_kernel_dw2(
 
     ## Strides of input activations. ##
     ## Inputs reshaped to 2-d tensor. ##
-    stride_inp_a: tl.constexpr, stride_inp_b: tl.constexpr, 
+    stride_inp_a: tl.constexpr, stride_inp_b: tl.constexpr,
 
     ## Strides of weight matrices. ##
     stride_w1_a: tl.constexpr, stride_w1_b: tl.constexpr,
     stride_w3_a: tl.constexpr, stride_w3_b: tl.constexpr,
 
     ## Strides of gradient matrices. ##
-    stride_incoming_grads_a: tl.constexpr, stride_incoming_grads_b: tl.constexpr, 
+    stride_incoming_grads_a: tl.constexpr, stride_incoming_grads_b: tl.constexpr,
     stride_dw2_a: tl.constexpr, stride_dw2_b: tl.constexpr,
 
     ## Lastly, the activation function. ##
@@ -1218,7 +1218,7 @@ def _bwd_kernel_dw2(
 
         o1 = tl.zeros((BLOCK_Y, BLOCK_X), dtype=tl.float32)
         o2 = tl.zeros((BLOCK_Y, BLOCK_X), dtype=tl.float32)
-        for k in tl.range(0, tl.cdiv(d_m, d_m_block)):  
+        for k in tl.range(0, tl.cdiv(d_m, d_m_block)):
             ## First, we load the data from the input activations. ##
             activations = tl.load(activation_ptrs, mask=( \
                                     (tl.arange(0, BLOCK_Y)[:, None] + bid_x * BLOCK_Y + batch * N < N * batch_size) \
@@ -1244,7 +1244,7 @@ def _bwd_kernel_dw2(
         ## All of these are of size: (BLOCK_Y, BLOCK_X).
         sig_o1 = tl.sigmoid(o1)
         o3 = o1 * sig_o1
-        o4 = o3 * o2 
+        o4 = o3 * o2
         ## Next, we have to downcast the intermediate activations to the pertinent data-type prior to second mat-mul. ##
         if ACTIVATION == "bfloat16":
             o4 = o4.to(tl.bfloat16) ## Size: (BLOCK_Y, BLOCK_X)
@@ -1257,7 +1257,7 @@ def _bwd_kernel_dw2(
 
         dw2_ptrs = dw2_ptr + tl.arange(0, d_m_block)[None, :] * stride_dw2_b \
                         + tl.arange(0, BLOCK_X)[:, None] * stride_dw2_a \
-                        + j * BLOCK_X * stride_dw2_a 
+                        + j * BLOCK_X * stride_dw2_a
 
         ## Compute the answers. ##
         for k in tl.range(0, tl.cdiv(d_m, d_m_block)):
@@ -1289,7 +1289,7 @@ def _bwd_kernel_dx_dw2(
     ## Weight matrices. ##
     w1_ptr, w2_ptr, w3_ptr,
     ## Gradient matrices. ##
-    incoming_grads_ptr, 
+    incoming_grads_ptr,
     dx_ptr, dw2_ptr,
     ## Dimensions of the overall computation. ##
     N: tl.constexpr, d_ffn: tl.constexpr, d_m: tl.constexpr, batch_size: tl.constexpr,
@@ -1297,7 +1297,7 @@ def _bwd_kernel_dx_dw2(
 
     ## Strides of input activations. ##
     ## Inputs reshaped to 2-d tensor. ##
-    stride_inp_a: tl.constexpr, stride_inp_b: tl.constexpr, 
+    stride_inp_a: tl.constexpr, stride_inp_b: tl.constexpr,
 
     ## Strides of weight matrices. ##
     stride_w1_a: tl.constexpr, stride_w1_b: tl.constexpr,
@@ -1305,7 +1305,7 @@ def _bwd_kernel_dx_dw2(
     stride_w3_a: tl.constexpr, stride_w3_b: tl.constexpr,
 
     ## Strides of gradient matrices. ##
-    stride_incoming_grads_a: tl.constexpr, stride_incoming_grads_b: tl.constexpr, 
+    stride_incoming_grads_a: tl.constexpr, stride_incoming_grads_b: tl.constexpr,
     stride_dx_a: tl.constexpr, stride_dx_b: tl.constexpr,
     stride_dw2_a: tl.constexpr, stride_dw2_b: tl.constexpr,
 
@@ -1370,7 +1370,7 @@ def _bwd_kernel_dx_dw2(
         o1 = tl.zeros((BLOCK_Y, BLOCK_X), dtype=tl.float32)
         o2 = tl.zeros((BLOCK_Y, BLOCK_X), dtype=tl.float32)
         do4 = tl.zeros((BLOCK_Y, BLOCK_X), dtype=tl.float32)
-        for k in tl.range(0, tl.cdiv(d_m, d_m_block)):  
+        for k in tl.range(0, tl.cdiv(d_m, d_m_block)):
             ## First, we load the data from the input activations. ##
             activations = tl.load(activation_ptrs, mask=( \
                                     (tl.arange(0, BLOCK_Y)[:, None] + bid_x * BLOCK_Y + batch * N < N * batch_size) \
@@ -1410,7 +1410,7 @@ def _bwd_kernel_dx_dw2(
         ## All of these are of size: (BLOCK_Y, BLOCK_X).
         sig_o1 = tl.sigmoid(o1)
         o3 = o1 * sig_o1
-        o4 = o3 * o2 
+        o4 = o3 * o2
         do2 = do4 * o3
         do3 = do4 * o2
         do1 = do3 * (sig_o1 + o3 * (tl.full((BLOCK_Y, BLOCK_X), 1, tl.float32) - sig_o1))
@@ -1428,7 +1428,7 @@ def _bwd_kernel_dx_dw2(
 
         dw2_ptrs = dw2_ptr + tl.arange(0, d_m_block)[None, :] * stride_dw2_b \
                         + tl.arange(0, BLOCK_X)[:, None] * stride_dw2_a \
-                        + j * BLOCK_X * stride_dw2_a 
+                        + j * BLOCK_X * stride_dw2_a
 
         ## This is for computing dX. ##
         weight_three_ptrs = w3_ptr + tl.arange(0, d_m_block)[:, None] * stride_w3_a \
@@ -1438,11 +1438,11 @@ def _bwd_kernel_dx_dw2(
         weight_one_ptrs = w1_ptr + tl.arange(0, d_m_block)[:, None] * stride_w1_a \
                                  + tl.arange(0, BLOCK_X)[None, :] * stride_w1_b \
                                  + j * BLOCK_X
-        
+
         dx_ptrs = dx_ptr + tl.arange(0, BLOCK_Y)[:, None] * stride_dx_a \
                          + tl.arange(0, d_m_block)[None, :] * stride_dx_b \
                          + bid_x * BLOCK_Y * stride_dx_a \
-                         + batch * N * d_m 
+                         + batch * N * d_m
 
         ## Compute the answers. ##
         for k in tl.range(0, tl.cdiv(d_m, d_m_block)):
@@ -1458,7 +1458,7 @@ def _bwd_kernel_dx_dw2(
 
             w1s = tl.load(weight_one_ptrs, mask=(\
                             (tl.arange(0, d_m_block)[:, None] + k * d_m_block < d_m) & \
-                            (tl.arange(0, BLOCK_X)[None, :] + j * BLOCK_X < d_ffn) 
+                            (tl.arange(0, BLOCK_X)[None, :] + j * BLOCK_X < d_ffn)
                 ))
 
             ## Mat-mul. ##
@@ -1472,7 +1472,7 @@ def _bwd_kernel_dx_dw2(
             ## Load add store to dx. ##
             _load_add_store(dx, dx_ptrs, mask=(\
                     (tl.arange(0, BLOCK_Y)[:, None] + bid_x * BLOCK_Y + batch * N < N * batch_size) & \
-                    (tl.arange(0, d_m_block)[None, :] + k * d_m_block < d_m) 
+                    (tl.arange(0, d_m_block)[None, :] + k * d_m_block < d_m)
                 ))
 
             do5_ptrs += d_m_block * stride_incoming_grads_b
@@ -1487,7 +1487,7 @@ def _fwd(inp, w1, w2, w3, use_opt=True):
     assert w1.shape == w3.shape, 'Incorrect weight matrices passed in.'
     ## We need to extract a good triton configuration here. ##
     num_warps, num_blocks, BLOCK_Y, BLOCK_X, d_m_block_size, num_stages = extract_fwd_params(inp.shape[1], w1.shape[1], w1.shape[0])
-    num_hid_par = 1  ## Unfortunately, this optimization doesn't work. 
+    num_hid_par = 1  ## Unfortunately, this optimization doesn't work.
     grid = (
         triton.cdiv(inp.shape[1], BLOCK_Y),
         inp.shape[0], num_hid_par
@@ -1513,7 +1513,7 @@ def _fwd(inp, w1, w2, w3, use_opt=True):
 
 def _bwd(
         incoming_gradients, input_activations,
-        w1, w2, w3, use_opt=True 
+        w1, w2, w3, use_opt=True
         ):
     assert incoming_gradients.dtype == input_activations.dtype, 'Incorrect dtypes passed in.'
     assert incoming_gradients.dtype == torch.float32 or incoming_gradients.dtype == torch.bfloat16, 'Incorrect dtypes passed in, must be float32 or bfloat16'
@@ -1533,20 +1533,20 @@ def _bwd(
     if use_opt:
         s1 = torch.cuda.Stream()
         s2 = torch.cuda.Stream()
-        num_warps, num_blocks, BLOCK_Y, BLOCK_X, d_m_block_size, num_stages = extract_bwd_params_dx(
-            incoming_gradients.shape[1],
-            w1.shape[1], w1.shape[0]
-            )
-        
-        grid_dx = (
-            triton.cdiv(N, BLOCK_Y), batch_size, 1
-        )
 
         with torch.cuda.stream(s1):
+            num_warps, num_blocks, BLOCK_Y, BLOCK_X, d_m_block_size, num_stages = extract_bwd_params_dx(
+                incoming_gradients.shape[1],
+                w1.shape[1], w1.shape[0]
+                )
+
+            grid_dx = (
+                triton.cdiv(N, BLOCK_Y), batch_size, 1
+            )
             _bwd_kernel_dx[grid_dx](
                 input_activations,
                 w1, w2, w3,
-                incoming_gradients, outgoing_gradients, 
+                incoming_gradients, outgoing_gradients,
                 N, d_ffn, d_m, batch_size,
                 input_activations.stride(0), input_activations.stride(1),
                 w1.stride(0), w1.stride(1),
@@ -1554,20 +1554,19 @@ def _bwd(
                 w3.stride(0), w3.stride(1),
                 incoming_gradients.stride(0), incoming_gradients.stride(1),
                 outgoing_gradients.stride(0), outgoing_gradients.stride(1),
-                ACTIVATION="bfloat16" if input_activations.dtype == torch.bfloat16 else "float32", 
+                ACTIVATION="bfloat16" if input_activations.dtype == torch.bfloat16 else "float32",
                 BLOCK_Y=BLOCK_Y, BLOCK_X=BLOCK_X, d_m_block=d_m_block_size
                 )
 
-        num_warps, num_blocks, BLOCK_Y, BLOCK_X, d_m_block_size, num_stages = extract_bwd_params_dw2_par_ffn(
-            incoming_gradients.shape[1],
-            w1.shape[1], w1.shape[0]
+            num_warps, num_blocks, BLOCK_Y, BLOCK_X, d_m_block_size, num_stages = extract_bwd_params_dw2_par_ffn(
+                incoming_gradients.shape[1],
+                w1.shape[1], w1.shape[0]
+                )
+
+            grid_dw2_par_ffn = (
+                triton.cdiv(d_ffn, BLOCK_X), 1, 1
             )
 
-        grid_dw2_par_ffn = (
-            triton.cdiv(d_ffn, BLOCK_X), 1, 1
-        )
-
-        with torch.cuda.stream(s1):
             _bwd_kernel_dw2_par_ffn[grid_dw2_par_ffn](
                 input_activations,
                 w1, w3,
@@ -1578,7 +1577,7 @@ def _bwd(
                 w3.stride(0), w3.stride(1),
                 incoming_gradients.stride(0), incoming_gradients.stride(1),
                 w2_gradients.stride(0), w2_gradients.stride(1),
-                ACTIVATION="bfloat16" if input_activations.dtype == torch.bfloat16 else "float32", 
+                ACTIVATION="bfloat16" if input_activations.dtype == torch.bfloat16 else "float32",
                 BLOCK_Y=BLOCK_Y, BLOCK_X=BLOCK_X, d_m_block=d_m_block_size
                 )
 
@@ -1604,9 +1603,14 @@ def _bwd(
                 incoming_gradients.stride(0), incoming_gradients.stride(1),
                 w1_gradients.stride(0), w1_gradients.stride(1),
                 w3_gradients.stride(0), w3_gradients.stride(1),
-                ACTIVATION="bfloat16" if input_activations.dtype == torch.bfloat16 else "float32", 
+                ACTIVATION="bfloat16" if input_activations.dtype == torch.bfloat16 else "float32",
                 BLOCK_Y=BLOCK_Y, BLOCK_X=BLOCK_X, d_m_block=d_m_block_size
                 )
+        #print(f'is_nan w1 grads: {torch.isnan(w1_gradients).sum()}')
+        #print(f'is_nan w2 grads: {torch.isnan(w2_gradients).sum()}')
+        #print(f'is_nan w3 grads: {torch.isnan(w3_gradients).sum()}')
+        #print(f'is_nan outgoing grads: {torch.isnan(outgoing_gradients).sum()}')
+        #print(f'is_nan incoming grads: {torch.isnan(incoming_gradients).sum()}')
     else:
         num_warps, num_blocks, BLOCK_Y, BLOCK_X, d_m_block_size, num_stages = extract_bwd_params_dx_dw2(
             incoming_gradients.shape[1],
@@ -1629,7 +1633,7 @@ def _bwd(
             incoming_gradients.stride(0), incoming_gradients.stride(1),
             outgoing_gradients.stride(0), outgoing_gradients.stride(1),
             w2_gradients.stride(0), w2_gradients.stride(1),
-            ACTIVATION="bfloat16" if input_activations.dtype == torch.bfloat16 else "float32", 
+            ACTIVATION="bfloat16" if input_activations.dtype == torch.bfloat16 else "float32",
             BLOCK_Y=BLOCK_Y, BLOCK_X=BLOCK_X, d_m_block=d_m_block_size
             )
 
@@ -1654,7 +1658,7 @@ def _bwd(
             incoming_gradients.stride(0), incoming_gradients.stride(1),
             w1_gradients.stride(0), w1_gradients.stride(1),
             w3_gradients.stride(0), w3_gradients.stride(1),
-            ACTIVATION="bfloat16" if input_activations.dtype == torch.bfloat16 else "float32", 
+            ACTIVATION="bfloat16" if input_activations.dtype == torch.bfloat16 else "float32",
             BLOCK_Y=BLOCK_Y, BLOCK_X=BLOCK_X, d_m_block=d_m_block_size
             )
 
@@ -1696,11 +1700,11 @@ FusedMLP = FusedMLP.apply
 class FusedSwigluLayer(torch.nn.Module):
     """
     Fuses the fwd and bwd pass for the compute of:
-    (silu(inp @ w1) + (inp @ w3)) @ w2 
+    (silu(inp @ w1) + (inp @ w3)) @ w2
     """
     def __init__(
-            self, d_m: int, d_ffn: int, 
-            w1: torch.nn.Parameter=None, w2: torch.nn.Parameter=None, 
+            self, d_m: int, d_ffn: int,
+            w1: torch.nn.Parameter=None, w2: torch.nn.Parameter=None,
             w3: torch.nn.Parameter=None):
         super().__init__()
         ## We initialize the w1, w2 and w3 weight matrices. ##
@@ -1709,15 +1713,15 @@ class FusedSwigluLayer(torch.nn.Module):
         if w1 is None and w2 is None and w3 is None:
             ## Otherwise, we manually initialize. ##
             self.w1 = torch.nn.Parameter(data=torch.nn.init.trunc_normal_(
-                torch.zeros((d_m, d_ffn), device="cuda" if torch.cuda.is_available() else "cpu"), 
+                torch.zeros((d_m, d_ffn), device="cuda" if torch.cuda.is_available() else "cpu"),
                 mean=0.0, std=0.02))
             self.w2 = torch.nn.Parameter(data=torch.nn.init.trunc_normal_(
-                torch.zeros((d_ffn, d_m), device="cuda" if torch.cuda.is_available() else "cpu"), 
+                torch.zeros((d_ffn, d_m), device="cuda" if torch.cuda.is_available() else "cpu"),
                 mean=0.0, std=0.02))
             self.w3 = torch.nn.Parameter(data=torch.nn.init.trunc_normal_(
-                torch.zeros((d_m, d_ffn), device="cuda" if torch.cuda.is_available() else "cpu"), 
+                torch.zeros((d_m, d_ffn), device="cuda" if torch.cuda.is_available() else "cpu"),
                 mean=0.0, std=0.02))
-        elif w1 is not None and w2 is not None and w3 is not None: 
+        elif w1 is not None and w2 is not None and w3 is not None:
             self.w1 = w1
             self.w2 = w2
             self.w3 = w3
