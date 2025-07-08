@@ -16,6 +16,7 @@ from torch import nn
 from torchtitan.models.norms import build_norm
 from .fused_mlp import FusedMLP
 from .fused_mlp_swiglu import FusedSwigluLayer
+from .fused_mlp_swiglu_ac import FusedSwigluLayer as FusedSwigluLayerAC
 import pdb
 
 
@@ -302,7 +303,8 @@ class FusedFeedForward(nn.Module):
         self.w2 = nn.Linear(hidden_dim, dim, bias=False)
         self.w3 = nn.Linear(dim, hidden_dim, bias=False)
 
-        self.fused_fn = FusedSwigluLayer(dim, hidden_dim)
+        #self.fused_fn = FusedSwigluLayer(dim, hidden_dim) ## Old, fully fused function.
+        self.fused_fn = FusedSwigluLayerAC(dim, hidden_dim)
 
     def forward(self, x):
         ## Uncomment whichver function you'd like to test out. ##
