@@ -5,6 +5,16 @@ import triton
 import triton.language as tl
 
 def get_cuda_autotune_config():
+    #cnfgs = []
+    #for BLOCK_M in [32, 64, 128, 256]:
+    #    for BLOCK_N in [32, 64, 128, 256]:
+    #        for BLOCK_K in [32, 64, 128, 256]:
+    #            for warp_cnt in [4, 8]:
+    #                cnfgs.append(triton.Config({'BLOCK_SIZE_M': BLOCK_M, 'BLOCK_SIZE_N': BLOCK_N, 'BLOCK_SIZE_K': BLOCK_K, 'GROUP_SIZE_M': 8},
+    #                                           num_stages=4, num_warps=warp_cnt))
+
+    #print(f'testing: {len(cnfgs)} configs...')
+    #return cnfgs
     return [
         triton.Config({'BLOCK_SIZE_M': 128, 'BLOCK_SIZE_N': 256, 'BLOCK_SIZE_K': 64, 'GROUP_SIZE_M': 8}, num_stages=3,
                       num_warps=8),
@@ -296,8 +306,8 @@ def matmul_dx(
     b_ptrs = o2_ptr + (offs_am[:, None] * stride_am + offs_k[None, :] * stride_ak)
     c_ptrs = do4_ptr + (offs_am[:, None] * stride_am + offs_k[None, :] * stride_ak)
 
-    d_ptrs = w1_ptr + (offs_k[:, None] * stride_bk + offs_bn[None, :] * stride_bn)
-    e_ptrs = w3_ptr + (offs_k[:, None] * stride_bk + offs_bn[None, :] * stride_bn)
+    d_ptrs = w1_ptr + (offs_k[None, :] * stride_bn + offs_bn[:, None] * stride_bk)
+    e_ptrs = w3_ptr + (offs_k[None, :] * stride_bn + offs_bn[:, None] * stride_bk)
 
     # -----------------------------------------------------------
     # Iterate to compute a block of the C matrix.
@@ -313,8 +323,8 @@ def matmul_dx(
         o2 = tl.load(b_ptrs, mask=offs_k[None, :] < K - k * BLOCK_SIZE_K, other=0.0)
         do4 = tl.load(c_ptrs, mask=offs_k[None, :] < K - k * BLOCK_SIZE_K, other=0.0)
 
-        w1 = tl.load(d_ptrs, mask=offs_k[:, None] < K - k * BLOCK_SIZE_K, other=0.0)
-        w3 = tl.load(e_ptrs, mask=offs_k[:, None] < K - k * BLOCK_SIZE_K, other=0.0)
+        w1 = tl.load(d_ptrs, mask=offs_k[None, :] < K - k * BLOCK_SIZE_K, other=0.0)
+        w3 = tl.load(e_ptrs, mask=offs_k[None, :] < K - k * BLOCK_SIZE_K, other=0.0)
 
         ## Here are some compute operators. ##
         o3 = o1 * tl.sigmoid(o1.to(tl.float32)) 
@@ -326,14 +336,15 @@ def matmul_dx(
             do1 = do1.to(tl.bfloat16)
 
         # We accumulate along the K dimension.
-        dx += tl.dot(do2, w3) + tl.dot(do1, w1)
+        dx += tl.dot(do2, tl.trans(w3)) + tl.dot(do1, tl.trans(w1))
 
         # Advance the ptrs to the next K block.
         a_ptrs += BLOCK_SIZE_K * stride_ak
         b_ptrs += BLOCK_SIZE_K * stride_ak
         c_ptrs += BLOCK_SIZE_K * stride_ak
-        d_ptrs += BLOCK_SIZE_K * stride_bk
-        e_ptrs += BLOCK_SIZE_K * stride_bk
+
+        d_ptrs += BLOCK_SIZE_K * stride_bn
+        e_ptrs += BLOCK_SIZE_K * stride_bn
 
     # You can fuse arbitrary activation functions here
     # while the accumulator is still in FP32!
@@ -358,8 +369,8 @@ def _bwd(
 
     ## We gotta reshape the incoming_gradients. ##
     batch_size, N, d_m = incoming_gradients.shape
-    incoming_gradients = incoming_gradients.view(-1, incoming_gradients.shape[-1])
-    input_activations = input_activations.view(-1, input_activations.shape[-1])
+    incoming_gradients = incoming_gradients.reshape(-1, incoming_gradients.shape[-1])
+    input_activations = input_activations.reshape(-1, input_activations.shape[-1])
 
     ## We reconstruct certain tensors first. ##
     o1 = torch.einsum('sh,hf -> sf', input_activations, w1)
@@ -373,18 +384,18 @@ def _bwd(
     w2_gradients = torch.zeros_like(w2, dtype=torch.float32)
     w3_gradients = torch.zeros_like(w3, dtype=torch.float32)
 
-    ## Some transpositions. 
-    #input_activations = torch.transpose(input_activations, 0, 1)
-    w1 = torch.transpose(w1, 0, 1)
-    w3 = torch.transpose(w3, 0, 1)
+    BLOCK_SIZE_M=16
+    BLOCK_SIZE_N=16
+    BLOCK_SIZE_K=16
+    GROUP_SIZE_M=8
 
     dx_grid = (
-        triton.cdiv(o1.shape[0], 64) * triton.cdiv(w1.shape[-1], 256), 
+        triton.cdiv(o1.shape[0], 64) * triton.cdiv(w1.shape[0], 256), 
         1, 1
     )
 
     #dx_grid = lambda META: (
-    #    triton.cdiv(o1.shape[0], META["BLOCK_SIZE_M"]) * triton.cdiv(w1.shape[-1], META["BLOCK_SIZE_N"]), 
+    #    triton.cdiv(o1.shape[0], META["BLOCK_SIZE_M"]) * triton.cdiv(w1.shape[0], META["BLOCK_SIZE_N"]), 
     #    1, 1
     #)
 
@@ -402,14 +413,13 @@ def _bwd(
     matmul_dx[dx_grid](
         o1, o2, w1, w3,
         do4, outgoing_gradients,
-        o1.shape[0], w1.shape[-1], o1.shape[-1],
+        o1.shape[0], w1.shape[0], o1.shape[-1],
         o1.stride(0), o1.stride(1),
         w1.stride(0), w1.stride(1),
         outgoing_gradients.stride(0), outgoing_gradients.stride(1),
         precision="bfloat16" if input_activations.dtype == torch.bfloat16 else "float32",
         ## Block stuff goes here. ##
-        BLOCK_SIZE_M=64, BLOCK_SIZE_N=256, BLOCK_SIZE_K=32, GROUP_SIZE_M=8,
-        num_warps=4, num_stages=4
+        BLOCK_SIZE_M=64, BLOCK_SIZE_N=256, BLOCK_SIZE_K=32, GROUP_SIZE_M=GROUP_SIZE_M, num_warps=4, num_stages=4
     )
 
     matmul_dw1_dw3[dw1_dw3_grid](
@@ -420,8 +430,7 @@ def _bwd(
         o1.stride(0), o2.stride(1),
         w1_gradients.stride(0), w1_gradients.stride(1),
         precision="bfloat16" if input_activations.dtype == torch.bfloat16 else "float32",
-        BLOCK_SIZE_M=128, BLOCK_SIZE_N=64, BLOCK_SIZE_K=32, GROUP_SIZE_M=8,
-        num_warps=4, num_stages=4
+        BLOCK_SIZE_M=128, BLOCK_SIZE_N=64, BLOCK_SIZE_K=32, GROUP_SIZE_M=GROUP_SIZE_M, num_warps=4, num_stages=4
     )
 
     ## Next, we launch dw2, which requires transposing o1 & o2.
@@ -443,15 +452,12 @@ def _bwd(
         incoming_gradients.stride(0), incoming_gradients.stride(1),
         w2_gradients.stride(0), w2_gradients.stride(1),
         precision="bfloat16" if input_activations.dtype == torch.bfloat16 else "float32",
-        BLOCK_SIZE_M=64, BLOCK_SIZE_N=256, BLOCK_SIZE_K=32, GROUP_SIZE_M=8,
-        num_warps=4, num_stages=4
+        BLOCK_SIZE_M=64, BLOCK_SIZE_N=256, BLOCK_SIZE_K=32, GROUP_SIZE_M=GROUP_SIZE_M, num_warps=4, num_stages=4
     )
 
     ## Undo views and transpositions. ##
-    outgoing_gradients = outgoing_gradients.view(batch_size, N, d_m)
-    input_activations = input_activations.view(batch_size, N, d_m)
-    w1 = torch.transpose(w1, 0, 1)
-    w3 = torch.transpose(w3, 0, 1)
+    outgoing_gradients = outgoing_gradients.reshape(batch_size, N, d_m)
+    input_activations = input_activations.reshape(batch_size, N, d_m)
 
     return outgoing_gradients, w1_gradients, w2_gradients, w3_gradients
 
