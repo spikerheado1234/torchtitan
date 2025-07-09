@@ -379,7 +379,7 @@ def _bwd(
     w3 = torch.transpose(w3, 0, 1)
 
     dx_grid = (
-        triton.cdiv(o1.shape[0], 64) * triton.cdiv(w1.shape[-1], 256), 
+        triton.cdiv(o1.shape[0], 64) * triton.cdiv(w1.shape[-1], 64), 
         1, 1
     )
 
@@ -389,7 +389,7 @@ def _bwd(
     #)
 
     dw1_dw3_grid = (
-        triton.cdiv(input_activations.shape[-1], 128) * triton.cdiv(o1.shape[-1], 64),
+        triton.cdiv(input_activations.shape[-1], 256) * triton.cdiv(o1.shape[-1], 64),
         1, 1
     )
 
@@ -408,7 +408,7 @@ def _bwd(
         outgoing_gradients.stride(0), outgoing_gradients.stride(1),
         precision="bfloat16" if input_activations.dtype == torch.bfloat16 else "float32",
         ## Block stuff goes here. ##
-        BLOCK_SIZE_M=64, BLOCK_SIZE_N=256, BLOCK_SIZE_K=32, GROUP_SIZE_M=8,
+        BLOCK_SIZE_M=64, BLOCK_SIZE_N=64, BLOCK_SIZE_K=32, GROUP_SIZE_M=8,
         num_warps=4, num_stages=4
     )
 
@@ -420,8 +420,8 @@ def _bwd(
         o1.stride(0), o2.stride(1),
         w1_gradients.stride(0), w1_gradients.stride(1),
         precision="bfloat16" if input_activations.dtype == torch.bfloat16 else "float32",
-        BLOCK_SIZE_M=128, BLOCK_SIZE_N=64, BLOCK_SIZE_K=32, GROUP_SIZE_M=8,
-        num_warps=4, num_stages=4
+        BLOCK_SIZE_M=256, BLOCK_SIZE_N=64, BLOCK_SIZE_K=32, GROUP_SIZE_M=8,
+        num_warps=8, num_stages=4
     )
 
     ## Next, we launch dw2, which requires transposing o1 & o2.
