@@ -42,10 +42,10 @@ def get_cuda_autotune_config():
     ]
 
 ## We define a new set of kernels here that are simpler. ##
-@triton.autotune(
-    configs=get_cuda_autotune_config(),
-    key=['M', 'N', 'K'],
-)
+#@triton.autotune(
+#    configs=get_cuda_autotune_config(),
+#    key=['M', 'N', 'K'],
+#)
 @triton.jit
 def matmul_dw1_dw3(
         # Pointers to matrices
@@ -147,10 +147,10 @@ def matmul_dw1_dw3(
     tl.store(dw1_ptrs, dw1, mask=store_mask)
     tl.store(dw3_ptrs, dw3, mask=store_mask)
 
-@triton.autotune(
-    configs=get_cuda_autotune_config(),
-    key=['M', 'N', 'K'],
-)
+#@triton.autotune(
+#    configs=get_cuda_autotune_config(),
+#    key=['M', 'N', 'K'],
+#)
 @triton.jit
 def matmul_dw2(
         # Pointers to matrices
@@ -243,10 +243,10 @@ def matmul_dw2(
     tl.store(dw2_ptrs, dw2, mask=store_mask)
 
 
-@triton.autotune(
-    configs=get_cuda_autotune_config(),
-    key=['M', 'N', 'K'],
-)
+#@triton.autotune(
+#    configs=get_cuda_autotune_config(),
+#    key=['M', 'N', 'K'],
+#)
 @triton.jit
 def matmul_dx(
         # Pointers to matrices
@@ -378,30 +378,25 @@ def _bwd(
     w1 = torch.transpose(w1, 0, 1)
     w3 = torch.transpose(w3, 0, 1)
 
-    BLOCK_SIZE_M=16
-    BLOCK_SIZE_N=16
-    BLOCK_SIZE_K=16
-    GROUP_SIZE_M=8
-
-    #dx_grid = (
-    #    triton.cdiv(o1.shape[0], BLOCK_SIZE_M) * triton.cdiv(w1.shape[-1], BLOCK_SIZE_N), 
-    #    1, 1
-    #)
-
-    dx_grid = lambda META: (
-        triton.cdiv(o1.shape[0], META["BLOCK_SIZE_M"]) * triton.cdiv(w1.shape[-1], META["BLOCK_SIZE_N"]), 
+    dx_grid = (
+        triton.cdiv(o1.shape[0], 64) * triton.cdiv(w1.shape[-1], 256), 
         1, 1
     )
 
-    #dw1_dw3_grid = (
-    #    triton.cdiv(input_activations.shape[-1], BLOCK_SIZE_M) * triton.cdiv(o1.shape[-1], BLOCK_SIZE_N),
+    #dx_grid = lambda META: (
+    #    triton.cdiv(o1.shape[0], META["BLOCK_SIZE_M"]) * triton.cdiv(w1.shape[-1], META["BLOCK_SIZE_N"]), 
     #    1, 1
     #)
 
-    dw1_dw3_grid = lambda META: (
-        triton.cdiv(input_activations.shape[-1], META["BLOCK_SIZE_M"]) * triton.cdiv(o1.shape[-1], META["BLOCK_SIZE_N"]),
+    dw1_dw3_grid = (
+        triton.cdiv(input_activations.shape[-1], 128) * triton.cdiv(o1.shape[-1], 64),
         1, 1
     )
+
+    #dw1_dw3_grid = lambda META: (
+    #    triton.cdiv(input_activations.shape[-1], META["BLOCK_SIZE_M"]) * triton.cdiv(o1.shape[-1], META["BLOCK_SIZE_N"]),
+    #    1, 1
+    #)
 
     ## First we launch and dx & dw1_dw3. ##
     matmul_dx[dx_grid](
@@ -413,7 +408,8 @@ def _bwd(
         outgoing_gradients.stride(0), outgoing_gradients.stride(1),
         precision="bfloat16" if input_activations.dtype == torch.bfloat16 else "float32",
         ## Block stuff goes here. ##
-        #BLOCK_SIZE_M=BLOCK_SIZE_M, BLOCK_SIZE_N=BLOCK_SIZE_N, BLOCK_SIZE_K=BLOCK_SIZE_K, GROUP_SIZE_M=GROUP_SIZE_M
+        BLOCK_SIZE_M=64, BLOCK_SIZE_N=256, BLOCK_SIZE_K=32, GROUP_SIZE_M=8,
+        num_warps=4, num_stages=4
     )
 
     matmul_dw1_dw3[dw1_dw3_grid](
@@ -424,19 +420,20 @@ def _bwd(
         o1.stride(0), o2.stride(1),
         w1_gradients.stride(0), w1_gradients.stride(1),
         precision="bfloat16" if input_activations.dtype == torch.bfloat16 else "float32",
-        #BLOCK_SIZE_M=BLOCK_SIZE_M, BLOCK_SIZE_N=BLOCK_SIZE_N, BLOCK_SIZE_K=BLOCK_SIZE_K, GROUP_SIZE_M=GROUP_SIZE_M
+        BLOCK_SIZE_M=128, BLOCK_SIZE_N=64, BLOCK_SIZE_K=32, GROUP_SIZE_M=8,
+        num_warps=4, num_stages=4
     )
 
     ## Next, we launch dw2, which requires transposing o1 & o2.
-    #dw2_grid = (
-    #    triton.cdiv(o1.shape[-1], BLOCK_SIZE_M) * triton.cdiv(incoming_gradients.shape[-1], BLOCK_SIZE_N),
-    #    1, 1
-    #)
-
-    dw2_grid = lambda META: (
-        triton.cdiv(o1.shape[-1], META["BLOCK_SIZE_M"]) * triton.cdiv(incoming_gradients.shape[-1], META["BLOCK_SIZE_N"]),
+    dw2_grid = (
+        triton.cdiv(o1.shape[-1], 64) * triton.cdiv(incoming_gradients.shape[-1], 256),
         1, 1
     )
+
+    #dw2_grid = lambda META: (
+    #    triton.cdiv(o1.shape[-1], META["BLOCK_SIZE_M"]) * triton.cdiv(incoming_gradients.shape[-1], META["BLOCK_SIZE_N"]),
+    #    1, 1
+    #)
 
     matmul_dw2[dw2_grid](
         o1, o2, incoming_gradients,
@@ -446,7 +443,8 @@ def _bwd(
         incoming_gradients.stride(0), incoming_gradients.stride(1),
         w2_gradients.stride(0), w2_gradients.stride(1),
         precision="bfloat16" if input_activations.dtype == torch.bfloat16 else "float32",
-        #BLOCK_SIZE_M=BLOCK_SIZE_M, BLOCK_SIZE_N=BLOCK_SIZE_N, BLOCK_SIZE_K=BLOCK_SIZE_K, GROUP_SIZE_M=GROUP_SIZE_M
+        BLOCK_SIZE_M=64, BLOCK_SIZE_N=256, BLOCK_SIZE_K=32, GROUP_SIZE_M=8,
+        num_warps=4, num_stages=4
     )
 
     ## Undo views and transpositions. ##
