@@ -309,8 +309,8 @@ class FusedFeedForward(nn.Module):
 
     def forward(self, x):
         ## Uncomment whichver function you'd like to test out. ##
-        return self.w2(F.silu(self.w1(x)) * self.w3(x))
-        #return self.fused_fn(x)
+        #return self.w2(F.silu(self.w1(x)) * self.w3(x))
+        return self.fused_fn(x)
 
     def init_weights(self, init_std: float):
         nn.init.trunc_normal_(self.w1.weight, mean=0.0, std=0.02)
@@ -390,8 +390,8 @@ class TransformerBlock(nn.Module):
 
         """
         h = x + self.attention(self.attention_norm(x), freqs_cis)
-        #out = h + self.feed_forward(self.ffn_norm(h))
-        out = h + self.checkpointed_ffn(self.ffn_norm(h)) ## This is for checkpointed baseline.
+        out = h + self.feed_forward(self.ffn_norm(h))
+        #out = h + self.checkpointed_ffn(self.ffn_norm(h)) ## This is for checkpointed baseline.
         return out
 
     def init_weights(self):
