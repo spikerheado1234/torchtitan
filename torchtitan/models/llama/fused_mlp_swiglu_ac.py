@@ -51,6 +51,197 @@ def get_cuda_autotune_config():
                       num_warps=4)
     ]
 
+## This is the old fwd kernel. Try to see if it reduces fragmentation significantly. ##
+@triton.jit
+def _load_add_store(values_smem, ptrs: tl.constexpr, mask: tl.constexpr):
+    loaded_values = tl.load(ptrs, mask=mask, other=0.0)
+    stored_vals = loaded_values + values_smem
+    tl.store(ptrs, stored_vals.to(loaded_values.type.element_ty), mask=mask)
+
+@triton.jit
+def _fwd_kernel(
+    ## Input activations. ##
+    inp_ptr,
+    ## Weight matrices. ##
+    w1_ptr, w2_ptr, w3_ptr,
+    ## Output activation matrix. ##
+    output_ptr,
+    N: tl.constexpr, d_ffn: tl.constexpr, d_m: tl.constexpr,
+    ## Strides. ##
+
+    ## Strides of input activations. ##
+    stride_inp_a: tl.constexpr, stride_inp_b: tl.constexpr, stride_inp_c: tl.constexpr,
+
+    ## Strides of weight matrices. ##
+    stride_w1_a: tl.constexpr, stride_w1_b: tl.constexpr,
+    stride_w2_a: tl.constexpr, stride_w2_b: tl.constexpr,
+
+    ## Strides of output activation matrix. ##
+    stride_output_a: tl.constexpr, stride_output_b: tl.constexpr, stride_output_c: tl.constexpr,
+
+    ## Lastly, the activation function. ##
+    ACTIVATION: tl.constexpr, data_type: tl.constexpr, use_opt: tl.constexpr,
+    ## Block Sizes. We default to parallelising over batch dimension. ##
+    BLOCK_Y: tl.constexpr, BLOCK_X: tl.constexpr, d_m_block: tl.constexpr):
+    """
+    Input sizes:
+    inp_ptr (original activations): [b, s, d_m] matrix.
+    w1_ptr (first weight matrix): [d_m, d_ffn] matrix.
+    w2_ptr (second weight matrix): [d_ffn, d_m] matrix.
+    w3_ptr (third weight matrix): [d_m, d_ffn] matrxi (identical to w1).
+    output_ptr (final output activations): [b, s, d_m] matrix.
+
+    The kerenl performs the computation:
+    (silu(inp @ w1) * inp @ w3) @w2
+    """
+    bid_x = tl.program_id(axis=0)
+    batch = tl.program_id(axis=1)
+
+    hid_tiles = tl.num_programs(axis=2)
+    hid_num = tl.program_id(axis=2)
+    for j in tl.range(hid_num, tl.cdiv(d_ffn, BLOCK_X), hid_tiles):
+        output_ptrs_consec = tl.max_contiguous(tl.arange(0, d_m_block) * stride_output_c + \
+                                               bid_x * BLOCK_Y * stride_output_b,
+                                               d_m_block)
+        output_ptrs_consec = output_ptrs_consec[None, :]
+        output_ptrs = output_ptr + batch*stride_output_a \
+                        + tl.arange(0, BLOCK_Y)[:, None]*stride_output_b \
+                        + output_ptrs_consec
+                        # + tl.arange(0, d_m_block)[None, :]*stride_output_c \
+                        # + bid_x*BLOCK_Y*stride_output_b + step_size*i*stride_output_b
+        ## We load the data from the input activations. ##
+        activation_ptrs_consec = tl.max_contiguous(
+            tl.arange(0, d_m_block) * stride_inp_c \
+                        + bid_x*BLOCK_Y*stride_inp_b, d_m_block
+        )
+        activation_ptrs_consec = activation_ptrs_consec[None, :]
+        activation_ptrs = inp_ptr + batch*stride_inp_a \
+                            + tl.arange(0, BLOCK_Y)[:, None]*stride_inp_b \
+                            + activation_ptrs_consec
+                            # + tl.arange(0, d_m_block)[None, :]*stride_inp_c \
+                            # + bid_x*BLOCK_Y*stride_inp_b + step_size*i*stride_inp_b
+        ## We additionally tile across the hidden dimension to reduce shmem consumption. ##
+        ## We pull out the base pointer's compute arithmetic. ##
+        weight_one_ptrs_consec = tl.max_contiguous(
+            tl.arange(0, BLOCK_X)*stride_w1_b, BLOCK_X
+        )
+        weight_one_ptrs_consec = weight_one_ptrs_consec[None, :]
+        weight_one_ptrs = w1_ptr + j*BLOCK_X*stride_w1_b \
+                            + tl.arange(0, d_m_block)[:, None]*stride_w1_a \
+                            + weight_one_ptrs_consec
+
+        weight_two_ptrs_consec = tl.max_contiguous(
+            tl.arange(0, d_m_block) * stride_w2_b, d_m_block
+        )
+        weight_two_ptrs_consec = weight_two_ptrs_consec[None, :]
+        weight_two_ptrs = w2_ptr + j * BLOCK_X * stride_w2_a \
+                            + tl.arange(0, BLOCK_X)[:, None] * stride_w2_a \
+                            + weight_two_ptrs_consec
+
+        weight_three_ptrs_consec = tl.max_contiguous(
+            tl.arange(0, BLOCK_X)*stride_w1_b, BLOCK_X
+        )
+        weight_three_ptrs_consec = weight_three_ptrs_consec[None, :]
+        ## Weight 3's shape is identical to w1's.
+        weight_three_ptrs = w3_ptr + j*BLOCK_X*stride_w1_b \
+                            + tl.arange(0, d_m_block)[:, None]*stride_w1_a \
+                            + weight_three_ptrs_consec
+
+        gate_accum = tl.zeros((BLOCK_Y, BLOCK_X), dtype=tl.float32)
+        non_gate_accum = tl.zeros((BLOCK_Y, BLOCK_X), dtype=tl.float32)
+        for k in tl.range(0, tl.cdiv(d_m, d_m_block)):
+            ## First, we load the data from the input activations. ##
+            activations = tl.load(activation_ptrs, mask=( \
+                                    (tl.arange(0, BLOCK_Y)[:, None]+ bid_x*BLOCK_Y < N) \
+                                    & (tl.arange(0, d_m_block)[None, :] + k*d_m_block < d_m)), other=0.0)
+            ## Next, we load the first & third weight matrices. ##
+            weight_one = tl.load(weight_one_ptrs, mask=( \
+                                    (tl.arange(0, d_m_block)[:, None] + k*d_m_block < d_m) & \
+                                    (tl.arange(0, BLOCK_X)[None, :] +j*BLOCK_X < d_ffn)), other=0.0)
+
+            weight_three = tl.load(weight_three_ptrs, mask=( \
+                                    (tl.arange(0, d_m_block)[:, None] + k*d_m_block < d_m) & \
+                                    (tl.arange(0, BLOCK_X)[None, :] +j*BLOCK_X < d_ffn)), other=0.0)
+
+            ## We accumulate the partial results. ##
+            gate_accum += tl.dot(activations, weight_one)
+            non_gate_accum += tl.dot(activations, weight_three)
+
+            ## Increment pointers. ##
+            activation_ptrs += d_m_block
+            weight_one_ptrs += d_m_block*stride_w1_a
+            weight_three_ptrs += d_m_block*stride_w1_a
+
+        activ_accum = gate_accum * tl.sigmoid(gate_accum)
+        activ_accum *= non_gate_accum
+
+        ## Next, we have to downcast the intermediate activations to the pertinent data-type prior to second mat-mul. ##
+        if data_type == "bfloat16":
+            activ_accum = activ_accum.to(tl.bfloat16)
+
+        ## Next, we load the data from the second weight matrix to do the matmul. We again tile this across the hidden dimension. ##
+        for k in tl.range(0, tl.cdiv(d_m, d_m_block)):
+
+            weight_two = tl.load(weight_two_ptrs, mask=( \
+                                    (tl.arange(0, BLOCK_X)[:, None] +j*BLOCK_X < d_ffn) & \
+                                    (tl.arange(0, d_m_block)[None, :] + k*d_m_block < d_m)), other=0.0)
+
+            output_activations = tl.dot(activ_accum, weight_two)
+
+            ## We have to store the final output to HBM incrementally. ##
+            ## To do so we need atomic adds since triton has no other option. ##
+            if use_opt == 'true':
+                ## We have to commend out one or the other depending on num_par since python doesn't have macros. Predicating this forces the compiler to maket the conservative approach that atomic_add branch could be taken depsite par <=1.
+                _load_add_store(output_activations, output_ptrs, mask=( \
+                                    (tl.arange(0, BLOCK_Y)[:, None]+bid_x*BLOCK_Y < N) \
+                                    & (tl.arange(0, d_m_block)[None, :] + k*d_m_block < d_m)))
+                ## With a parallel scheme over the hid-dimension, we now have to atomically add to main memory. ##
+                #tl.atomic_add(output_ptrs, output_activations.to(tl.float32),
+                #            mask=(\
+                #                (tl.arange(0, BLOCK_Y)[:, None]+bid_x*BLOCK_Y < N) \
+                #                    & (tl.arange(0, d_m_block)[None, :] + k*d_m_block < d_m)), sem="relaxed")
+
+            else:
+                tl.atomic_add(output_ptrs, output_activations.to(tl.float32),
+                            mask=(\
+                                (tl.arange(0, BLOCK_Y)[:, None]+bid_x*BLOCK_Y < N) \
+                                    & (tl.arange(0, d_m_block)[None, :] + k*d_m_block < d_m)), sem="relaxed")
+
+            weight_two_ptrs += d_m_block*stride_w2_b
+            output_ptrs += d_m_block*stride_output_c
+
+def _fwd(inp, w1, w2, w3, use_opt=True):
+    assert inp.dtype == w1.dtype and w1.dtype == w2.dtype, 'Incorrect dtypes passed in.'
+    assert inp.dtype == torch.float32 or inp.dtype == torch.bfloat16, 'Incorrect dtypes passed in, must be float32 or bfloat16'
+    assert w1.shape == w3.shape, 'Incorrect weight matrices passed in.'
+    ## We need to extract a good triton configuration here. ##
+    BLOCK_Y=64
+    BLOCK_X=128
+    d_m_block_size=64
+    num_hid_par = 1  ## Unfortunately, this optimization doesn't work. 
+    grid = (
+        triton.cdiv(inp.shape[1], BLOCK_Y),
+        inp.shape[0], num_hid_par
+        )
+
+    output = torch.zeros_like(inp, dtype=inp.dtype if num_hid_par <= 1 else torch.float32)
+
+    _fwd_kernel[grid](
+        inp, w1, w2, w3, output, inp.shape[1], w1.shape[1], w1.shape[0],
+        inp.stride(0), inp.stride(1), inp.stride(2),
+        w1.stride(0), w1.stride(1),
+        w2.stride(0), w2.stride(1),
+        output.stride(0), output.stride(1), output.stride(2),
+        "relu", "float32" if inp.dtype == torch.float32 else "bfloat16",
+        use_opt='true' if use_opt else 'false',
+        BLOCK_Y=BLOCK_Y,BLOCK_X=BLOCK_X,d_m_block=d_m_block_size
+        )
+
+    if num_hid_par <= 1:
+        output = output.to(inp.dtype)
+
+    return output
+
 ## We define a new set of kernels here that are simpler. ##
 #@triton.autotune(
 #    configs=get_cuda_autotune_config(),
@@ -476,10 +667,11 @@ class FusedMLP(torch.autograd.Function):
         ctx.w2 = w2
         ctx.w3 = w3
         ## Forward pass is more simple. ##
-        a = torch.einsum('bsh,hf -> bsf', input, w1)
-        b = torch.einsum('bsh,hf -> bsf', input, w3)
-        c = torch.nn.functional.silu(a)*b
-        return torch.einsum('bsf,fh->bsh', c, w2)
+        #a = torch.einsum('bsh,hf -> bsf', input, w1)
+        #b = torch.einsum('bsh,hf -> bsf', input, w3)
+        #c = torch.nn.functional.silu(a)*b
+        #return torch.einsum('bsf,fh->bsh', c, w2)
+        return _fwd(input, w1, w2, w3)
 
     @staticmethod
     def backward(ctx, gradients : torch.Tensor) -> Tuple[torch.Tensor]:
