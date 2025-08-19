@@ -10,12 +10,14 @@
 import torch
 import torch.nn.functional as F
 from torch import nn
+from math import log, sqrt
 
 from torchtitan.models.attention import build_attention, init_attention_mask
 from torchtitan.protocols.train_spec import ModelProtocol
 
 from .args import TransformerModelArgs
-
+from .universal_attention import attention as UAOpt
+from .ua_baseline import UniversalAttention, SMVecMatMul
 
 def precompute_freqs_cis(dim: int, end: int, theta: float = 10000.0) -> torch.Tensor:
     """
@@ -134,8 +136,11 @@ class Attention(nn.Module):
             if model_args.n_kv_heads is None
             else model_args.n_kv_heads
         )
+        assert self.n_heads == self.n_kv_heads, 'GQA not supported yet!'
         self.n_rep = self.n_heads // self.n_kv_heads
+        self.emb_dim = model_args.dim
         self.head_dim = model_args.dim // model_args.n_heads
+        self.ua_opt = model_args.ua_opt
 
         self.wq = nn.Linear(
             model_args.dim, model_args.n_heads * self.head_dim, bias=False
@@ -145,12 +150,25 @@ class Attention(nn.Module):
         self.wo = nn.Linear(
             model_args.n_heads * self.head_dim, model_args.dim, bias=False
         )
+
+        self.wstatic = nn.Linear(model_args.dim, self.n_kv_heads*2, bias=True)
+        self.register_buffer("staticb", torch.empty(self.n_kv_heads*2))
+
         self.sdpa = build_attention(model_args.use_flex_attn, model_args.attn_mask_type)
 
+        if model_args.ua_opt:
+            self.ua = UAOpt 
+        else:
+            self.ua = UniversalAttention.apply
+
     def init_weights(self, init_std: float):
-        for linear in (self.wq, self.wk, self.wv):
+        for linear in (self.wq, self.wk, self.wv, self.wstatic):
             nn.init.trunc_normal_(linear.weight, mean=0.0, std=0.02)
         nn.init.trunc_normal_(self.wo.weight, mean=0.0, std=init_std)
+        self.wstatic.bias.data.zero_()
+        static_max = log(.1)
+        static_min = log(.001)
+        self.staticb = torch.rand_like(self.staticb) * (static_max - static_min) + static_min
 
     def forward(
         self,
@@ -179,6 +197,12 @@ class Attention(nn.Module):
         xk = xk.view(bs, seqlen, -1, self.head_dim)
         xv = xv.view(bs, seqlen, -1, self.head_dim)
 
+        ## Pre-req for universal attention occurs prior to RoPe.
+        static = F.linear(x, self.wstatic.weight.to(x.dtype), self.staticb.to(x.dtype) + self.wstatic.bias.to(x.dtype) * sqrt(self.emb_dim))
+        static = static.sigmoid().view(bs, seqlen, 2, self.n_kv_heads).permute(2,0,3,1)
+        static_src, static_dest = static[0], static[1]
+        xk = xk / xk.pow(2).sum(-1, True).sqrt().add(1e-6)
+
         xq, xk = apply_rotary_emb(xq, xk, freqs_cis=freqs_cis)
 
         # repeat k/v heads if n_kv_heads < n_heads
@@ -188,8 +212,12 @@ class Attention(nn.Module):
         xq = xq.transpose(1, 2)  # (bs, n_local_heads, seqlen, head_dim)
         xk = keys.transpose(1, 2)  # (bs, n_local_heads, seqlen, head_dim)
         xv = values.transpose(1, 2)  # (bs, n_local_heads, seqlen, head_dim)
-
-        output = self.sdpa(xq, xk, xv)
+        ## Call to UA, extra preprocessing for baseline.
+        if self.ua_opt:
+            output = self.ua(xq, xk, xv, True, 1.3, static_src, static_dest)
+        else:
+            ## For now, we just do normal attention.
+            output = self.sdpa(xq, xk, xv)
 
         output = output.transpose(
             1, 2
