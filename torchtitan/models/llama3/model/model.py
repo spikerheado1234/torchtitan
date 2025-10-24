@@ -227,8 +227,11 @@ class Attention(nn.Module):
         xq, xk = apply_rotary_emb(xq, xk, freqs_cis=freqs_cis)
 
         # repeat k/v heads if n_kv_heads < n_heads
-        keys = repeat_kv(xk, self.n_rep)  # (bs, seqlen, n_local_heads, head_dim)
-        values = repeat_kv(xv, self.n_rep)  # (bs, seqlen, n_local_heads, head_dim)
+        ## Currently, we don't have to do this as this is done later. ##
+        #keys = repeat_kv(xk, self.n_rep)  # (bs, seqlen, n_local_heads, head_dim)
+        #values = repeat_kv(xv, self.n_rep)  # (bs, seqlen, n_local_heads, head_dim)
+        keys = xk
+        values = xv
 
         xq = xq.transpose(1, 2).contiguous()  # (bs, n_local_heads, seqlen, head_dim)
         xk = keys.transpose(1, 2).contiguous()  # (bs, n_local_heads, seqlen, head_dim)

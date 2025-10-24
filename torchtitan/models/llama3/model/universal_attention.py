@@ -1,6 +1,9 @@
 import torch
 import triton
 import triton.language as tl
+from .affinity_generation import _affinity_bwd, _affinity_fwd
+
+import pdb
 
 def is_hip():
     return triton.runtime.driver.active.get_current_target().backend == "hip"
@@ -25,7 +28,7 @@ def _gen_affinity_scores(k, src, dest):
     affinity = kkt * src.pow(1/3).unsqueeze(-1) * dest.pow(1/3).unsqueeze(-2)
     affinity = torch.log1p(affinity.clamp(min=0, max=1-1e-6).neg())
     affinity = affinity.triu(1).cumsum(3)
-    return torch.transpose(affinity.masked_fill(torch.ones_like(affinity, dtype=torch.bool).tril(-1), -1e12), -1, -2).contiguous()
+    return torch.transpose(affinity.masked_fill(torch.ones_like(affinity, dtype=torch.bool).tril(-1), -1e12), -1, -2).contiguous().to(k.dtype)
 
 @triton.jit
 def _attn_fwd_inner(acc, l_i, m_i, q,  #
@@ -56,17 +59,15 @@ def _attn_fwd_inner(acc, l_i, m_i, q,  #
         ), other=0.0).to(tl.float32)
         k = tl.trans(tl.load(desc_k + k_ptr, mask=(tl.arange(0, BLOCK_N)+start_n)[:,None] < N_CTX, other=0.0))
         qk = tl.dot(q, k)
-        #qk *= 1/tl.sqrt(tl.cast(HEAD_DIM, dtype=tl.float32)) 
         qk += aff
         if STAGE == 2:
-            mask = (offs_m[:, None] >= (start_n + offs_n[None, :])) & ((start_n + offs_n[None, :]) < N_CTX) & (offs_m[:, None] < N_CTX)
-            qk = qk + tl.where(mask, 0, -1.0e6)
+            #mask = (offs_m[:, None] >= (start_n + offs_n[None, :])) & ((start_n + offs_n[None, :]) < N_CTX) & (offs_m[:, None] < N_CTX)
+            #qk = qk + tl.where(mask, 0, -1.0e6)
             m_ij = tl.maximum(m_i, tl.max(qk, 1))
             qk -= m_ij[:, None]
         else:
             m_ij = tl.maximum(m_i, tl.max(qk, 1))
             qk = qk - m_ij[:, None]
-
         p = tl.math.exp(qk)
         # -- compute correction factor
         alpha = tl.math.exp(m_i - m_ij)
@@ -423,7 +424,8 @@ class _attention(torch.autograd.Function):
         desc_o = o
 
         ## Here, we launch an affinity matrix calculation kernel to simplify implementation. ##
-        desc_affinity = _gen_affinity_scores(k, static_src, static_dest)
+        desc_affinity = _affinity_fwd(k, static_src, static_dest)
+        #desc_affinity = _gen_affinity_scores(k, static_src, static_dest)
 
         ## Specialize to this blk size for reasonable performance. ##
         BLOCK_M=128
@@ -458,12 +460,6 @@ class _attention(torch.autograd.Function):
     @staticmethod
     def backward(ctx, do):
         q, k, v, o, M, static_src, static_dest = ctx.saved_tensors
-        ## TODO(ahangupta): verify if this change impacts correctness. ##
-        do = do.contiguous()
-        #q = q.contiguous()
-        #o = o.contiguous()
-        #k = k.contiguous()
-        #v = v.contiguous()
         assert do.is_contiguous()
         assert q.stride() == do.stride() == o.stride() and k.stride() == v.stride()
         dq = torch.empty_like(q)
@@ -487,9 +483,9 @@ class _attention(torch.autograd.Function):
         )
         ## Recompute affinity scores. ##
         ## Turn on autodiff for this. ##
-        with torch.enable_grad():
-            affinity = _gen_affinity_scores(k, static_src, static_dest) ## (b, KV_H, N_CTX, N_CTX)
-        #affinity = ctx.affinity
+        affinity = _affinity_fwd(k, static_src, static_dest)
+        #with torch.enable_grad():
+        #    affinity = _gen_affinity_scores(k, static_src, static_dest) ## (b, KV_H, N_CTX, N_CTX)
         Q_H = N_HEAD // k.shape[1]
         KV_H = k.shape[1]
         daffinity = torch.zeros(affinity.shape[0], Q_H * KV_H, N_CTX, N_CTX, dtype=affinity.dtype, device=affinity.device)
@@ -514,7 +510,8 @@ class _attention(torch.autograd.Function):
         
         ## Use AOTAutograd for the rest. This is for simplicity and for the sake of moving fast. 
         ##   TODO(ahangupta): optimize out into triton kernel later.
-        dk_new, dsrc, ddest = torch.autograd.grad(affinity, [k, static_src, static_dest], grad_outputs=daffinity)
+        dk_new, dsrc, ddest = _affinity_bwd(k, static_src, static_dest, daffinity)
+        #dk_new, dsrc, ddest = torch.autograd.grad(affinity, [k, static_src, static_dest], grad_outputs=daffinity)
         dk += dk_new
         return dq, dk, dv, None, None, dsrc, ddest, None
     
