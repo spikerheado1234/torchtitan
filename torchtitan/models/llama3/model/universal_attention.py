@@ -460,10 +460,10 @@ class _attention(torch.autograd.Function):
         q, k, v, o, M, static_src, static_dest = ctx.saved_tensors
         ## TODO(ahangupta): verify if this change impacts correctness. ##
         do = do.contiguous()
-        q = q.contiguous()
-        o = o.contiguous()
-        k = k.contiguous().requires_grad_(True)
-        v = v.contiguous()
+        #q = q.contiguous()
+        #o = o.contiguous()
+        #k = k.contiguous()
+        #v = v.contiguous()
         assert do.is_contiguous()
         assert q.stride() == do.stride() == o.stride() and k.stride() == v.stride()
         dq = torch.empty_like(q)
@@ -489,6 +489,7 @@ class _attention(torch.autograd.Function):
         ## Turn on autodiff for this. ##
         with torch.enable_grad():
             affinity = _gen_affinity_scores(k, static_src, static_dest) ## (b, KV_H, N_CTX, N_CTX)
+        #affinity = ctx.affinity
         Q_H = N_HEAD // k.shape[1]
         KV_H = k.shape[1]
         daffinity = torch.zeros(affinity.shape[0], Q_H * KV_H, N_CTX, N_CTX, dtype=affinity.dtype, device=affinity.device)

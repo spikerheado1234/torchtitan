@@ -484,6 +484,9 @@ class Trainer(torch.distributed.checkpoint.stateful.Stateful):
                 optimizer=self.optimizers,
             ),
         ):
+            import time
+            torch.cuda.synchronize()
+            start = time.time()
             data_iterator = self.batch_generator(self.dataloader)
             while self.step < job_config.training.steps:
                 self.step += 1
@@ -512,7 +515,9 @@ class Trainer(torch.distributed.checkpoint.stateful.Stateful):
                         ),
                         world_mesh=self.world_mesh,
                     )
-
+            torch.cuda.synchronize()
+            end = time.time()
+            print(f'duration: {end-start}')
         if torch.distributed.get_rank() == 0:
             logger.info("Sleeping 2 seconds for other ranks to complete")
             time.sleep(2)

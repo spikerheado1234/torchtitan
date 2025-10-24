@@ -10,7 +10,8 @@ set -ex
 # use envs as local overrides for convenience
 # e.g.
 # LOG_RANK=0,1 NGPU=4 ./run_train.sh
-NGPU=${NGPU:-"8"}
+#NGPU=${NGPU:-"8"}
+NGPU=${NGPU:-"2"}
 export LOG_RANK=${LOG_RANK:-0}
 CONFIG_FILE=${CONFIG_FILE:-"./torchtitan/models/llama3/train_configs/debug_model.toml"}
 
@@ -21,11 +22,7 @@ fi
 
 TORCHFT_LIGHTHOUSE=${TORCHFT_LIGHTHOUSE:-"http://localhost:29510"}
 
-# Set memory allocator config for both CUDA and ROCm
-export PYTORCH_CUDA_ALLOC_CONF="expandable_segments:True"
-# For ROCm/HIP, also set HIP memory pool
-export HIP_FORCE_DEV_KERNARG=1
-
+PYTORCH_CUDA_ALLOC_CONF="expandable_segments:True" \
 TORCHFT_LIGHTHOUSE=${TORCHFT_LIGHTHOUSE} \
 torchrun --nproc_per_node=${NGPU} --rdzv_backend c10d --rdzv_endpoint="localhost:0" \
 --local-ranks-filter ${LOG_RANK} --role rank --tee 3 \

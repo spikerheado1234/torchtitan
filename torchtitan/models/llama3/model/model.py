@@ -14,10 +14,13 @@ from math import log, sqrt
 
 from torchtitan.models.attention import build_attention, init_attention_mask
 from torchtitan.protocols.train_spec import ModelProtocol
+from torch.nn.attention.flex_attention import flex_attention
+import torch.nn.functional as F
 
 from .args import TransformerModelArgs
 from .universal_attention import attention as UAOpt
 from .ua_baseline import UniversalAttention, SMVecMatMul
+from .affinity_generation import _gen_affinity_scores
 
 def precompute_freqs_cis(dim: int, end: int, theta: float = 10000.0) -> torch.Tensor:
     """
@@ -158,8 +161,11 @@ class Attention(nn.Module):
 
         if model_args.ua_opt:
             self.ua = UAOpt 
+            self.fast_aff_gen = _gen_affinity_scores
+            self.flex = flex_attention
         else:
             self.ua = UniversalAttention.apply
+            self.SMVMM = SMVecMatMul.apply
 
     def init_weights(self, init_std: float):
         for linear in (self.wq, self.wk, self.wv, self.wstatic):
@@ -169,6 +175,21 @@ class Attention(nn.Module):
         static_max = log(.1)
         static_min = log(.001)
         self.staticb = torch.rand_like(self.staticb) * (static_max - static_min) + static_min
+
+    def make_universal_score_mod(self, k: torch.Tensor, src: torch.Tensor, dest: torch.Tensor):
+        """Return a score_mod callable for flex_attention that reproduces the
+        universal-attention affinity computed by _gen_affinity_scores.
+
+        The returned callable closes over a precomputed affinity tensor to avoid
+        recomputing O(N^2) work per callback.
+        """
+        affs = self.fast_aff_gen(k, src, dest)
+        scale_fix = sqrt(k.shape[-1]) 
+
+        def score_mod(score, b: int, h: int, q_idx: int, k_idx: int):
+            return score*scale_fix + affs[b, h, q_idx, k_idx]
+
+        return score_mod
 
     def forward(
         self,
@@ -209,20 +230,44 @@ class Attention(nn.Module):
         keys = repeat_kv(xk, self.n_rep)  # (bs, seqlen, n_local_heads, head_dim)
         values = repeat_kv(xv, self.n_rep)  # (bs, seqlen, n_local_heads, head_dim)
 
-        xq = xq.transpose(1, 2)  # (bs, n_local_heads, seqlen, head_dim)
-        xk = keys.transpose(1, 2)  # (bs, n_local_heads, seqlen, head_dim)
-        xv = values.transpose(1, 2)  # (bs, n_local_heads, seqlen, head_dim)
+        xq = xq.transpose(1, 2).contiguous()  # (bs, n_local_heads, seqlen, head_dim)
+        xk = keys.transpose(1, 2).contiguous()  # (bs, n_local_heads, seqlen, head_dim)
+        xv = values.transpose(1, 2).contiguous()  # (bs, n_local_heads, seqlen, head_dim)
         ## Call to UA, extra preprocessing for baseline.
         if self.ua_opt:
+            
+            ## This is the ua kernel. ##
             output = self.ua(xq, xk, xv, True, 1.3, static_src, static_dest)
-        else:
-            ## For now, we just do normal attention.
-            output = self.sdpa(xq, xk, xv)
 
-        output = output.transpose(
-            1, 2
-        ).contiguous()  # (bs, seqlen, n_local_heads, head_dim)
-        output = output.view(bs, seqlen, -1)
+
+            ## This is the flex-attention version. ##
+            #score_mod = self.make_universal_score_mod(xk, static_src, static_dest)
+            #output = self.flex(xq, xk, xv, score_mod=score_mod)
+            
+            ## This is just flash-attention. ##
+            #output = self.sdpa(xq,xk,xv)
+            output = output.transpose(
+                1, 2
+            ).contiguous()  # (bs, seqlen, n_local_heads, head_dim)
+            output = output.view(bs, seqlen, -1)
+        else: 
+            ## This is the baseline. Uses SDPA version. ##
+            ## Here we do replication for GQA. ##
+            if xq.shape[1] != xk.shape[1]:
+                r = xq.shape[1] // xk.shape[1]
+                xk = xk.repeat(1, r, 1, 1)
+                xv = xv.repeat(1, r, 1, 1)
+                static_src = static_src.repeat(1, r, 1)
+                static_dest = static_dest.repeat(1, r, 1)
+
+            aff_scores = self.fast_aff_gen(xk, static_src, static_dest)
+            torch.backends.cuda.enable_math_sdp(False)
+            output = F.scaled_dot_product_attention(xq, xk, xv, attn_mask=aff_scores)
+            output = output.transpose(
+                1, 2
+            ).contiguous()  # (bs, seqlen, n_local_heads, head_dim)
+            output = output.view(bs, seqlen, -1)
+
         return self.wo(output)
 
 
