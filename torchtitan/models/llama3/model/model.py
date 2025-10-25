@@ -21,6 +21,8 @@ from .args import TransformerModelArgs
 from .universal_attention import attention as UAOpt
 from .ua_baseline import UniversalAttention, SMVecMatMul
 from .affinity_generation import _gen_affinity_scores
+from torch.backends.cuda import sdp_kernel, SDPBackend
+from torch.profiler import profile, record_function, ProfilerActivity
 
 def precompute_freqs_cis(dim: int, end: int, theta: float = 10000.0) -> torch.Tensor:
     """
@@ -139,7 +141,7 @@ class Attention(nn.Module):
             if model_args.n_kv_heads is None
             else model_args.n_kv_heads
         )
-        assert self.n_heads == self.n_kv_heads, 'GQA not supported yet!'
+        #assert self.n_heads == self.n_kv_heads, 'GQA not supported yet!'
         self.n_rep = self.n_heads // self.n_kv_heads
         self.emb_dim = model_args.dim
         self.head_dim = model_args.dim // model_args.n_heads
@@ -164,8 +166,7 @@ class Attention(nn.Module):
             self.fast_aff_gen = _gen_affinity_scores
             self.flex = flex_attention
         else:
-            self.ua = UniversalAttention.apply
-            self.SMVMM = SMVecMatMul.apply
+            self.fast_aff_gen = _gen_affinity_scores
 
     def init_weights(self, init_std: float):
         for linear in (self.wq, self.wk, self.wv, self.wstatic):
@@ -264,8 +265,10 @@ class Attention(nn.Module):
                 static_dest = static_dest.repeat(1, r, 1)
 
             aff_scores = self.fast_aff_gen(xk, static_src, static_dest)
-            torch.backends.cuda.enable_math_sdp(False)
-            output = F.scaled_dot_product_attention(xq, xk, xv, attn_mask=aff_scores)
+            with sdp_kernel(SDPBackend.FLASH_ATTENTION):
+                output = F.scaled_dot_product_attention(xq, xk, xv, attn_mask=aff_scores)
+                ## Now, for some reason only this triggers flash-attention. ##
+                #output = F.scaled_dot_product_attention(xq, xk, xv)
             output = output.transpose(
                 1, 2
             ).contiguous()  # (bs, seqlen, n_local_heads, head_dim)
