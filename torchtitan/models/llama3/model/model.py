@@ -242,8 +242,8 @@ class Attention(nn.Module):
         ## Call to UA, extra preprocessing for baseline.
         if self.ua_opt:
 
-            ## This is the ua kernel. ##
-            output = self.ua(xq, xk, xv, True, 1.3, static_src, static_dest)
+            ## This is the ua kernel. Returns a (output, last row of decay) tuple. ##
+            output, _ = self.ua(xq, xk, xv, True, 1.3, static_src, static_dest)
 
             output = output.transpose(
                 1, 2

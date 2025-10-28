@@ -417,7 +417,6 @@ class _attention(torch.autograd.Function):
 
         ## Here, we launch an affinity matrix calculation kernel to simplify implementation. ##
         desc_affinity = _affinity_fwd(k, static_src, static_dest)
-        #desc_affinity = _gen_affinity_scores(k, static_src, static_dest)
 
         ## Specialize to this blk size for reasonable performance. ##
         BLOCK_M=128
@@ -447,12 +446,14 @@ class _attention(torch.autograd.Function):
         ctx.sm_scale = sm_scale
         ctx.HEAD_DIM = HEAD_DIM_K
         ctx.causal = causal
-        return o
+        ## We return the last row of the affinity matrix for auxiliary loss compute as well. ##
+        return o, desc_affinity[:, :, -1, :]
 
     @staticmethod
-    def backward(ctx, do):
+    def backward(ctx, do, ddecay):
         q, k, v, o, M, static_src, static_dest = ctx.saved_tensors
         do = do.contiguous()
+        ddecay = ddecay.contiguous()
         assert q.stride() == do.stride() == o.stride() and k.stride() == v.stride()
         dq = torch.empty_like(q)
         dk = torch.empty_like(k)
