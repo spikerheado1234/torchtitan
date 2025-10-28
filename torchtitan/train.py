@@ -12,6 +12,7 @@ from typing import Any, Generator, Iterable, Optional
 
 import torch
 from torch.distributed.elastic.multiprocessing.errors import record
+from torch.profiler import profile, ProfilerActivity, record_function
 
 import torchtitan.components.ft as ft
 import torchtitan.protocols.train_spec as train_spec_module
@@ -472,6 +473,12 @@ class Trainer(torch.distributed.checkpoint.stateful.Stateful):
         self.checkpointer.load(step=job_config.checkpoint.load_step)
         logger.info(f"Training starts at step {self.step + 1}.")
 
+        ## Custom profiling setup. ##
+        activities = [ProfilerActivity.CPU]
+        if torch.cuda.is_available():
+            device = "cuda"
+            activities += [ProfilerActivity.CUDA]
+
         with (
             maybe_enable_profiling(job_config, global_step=self.step) as torch_profiler,
             maybe_enable_memory_snapshot(
@@ -484,15 +491,19 @@ class Trainer(torch.distributed.checkpoint.stateful.Stateful):
                 optimizer=self.optimizers,
             ),
         ):
-            import time
-            torch.cuda.synchronize()
-            start = time.time()
             data_iterator = self.batch_generator(self.dataloader)
             while self.step < job_config.training.steps:
                 self.step += 1
                 self.gc_handler.run(self.step)
                 try:
-                    self.train_step(data_iterator)
+                    if self.step != 3:
+                        self.train_step(data_iterator)
+                    else:
+                        ## We profile a specific iteraiton to reduce json size. ##
+                        with profile(activities=activities) as prof:
+                            self.train_step(data_iterator)
+                        if torch.distributed.get_rank() == 0:
+                            prof.export_chrome_trace("trace_step_opt.json")
                 except DataloaderStopIteration:
                     logger.warning("Ran out of data; last step was canceled.")
                     break
@@ -515,9 +526,6 @@ class Trainer(torch.distributed.checkpoint.stateful.Stateful):
                         ),
                         world_mesh=self.world_mesh,
                     )
-            torch.cuda.synchronize()
-            end = time.time()
-            print(f'duration: {end-start}')
         if torch.distributed.get_rank() == 0:
             logger.info("Sleeping 2 seconds for other ranks to complete")
             time.sleep(2)

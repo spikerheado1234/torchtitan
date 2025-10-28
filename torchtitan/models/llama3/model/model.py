@@ -24,6 +24,8 @@ from .affinity_generation import _gen_affinity_scores
 from torch.backends.cuda import sdp_kernel, SDPBackend
 from torch.profiler import profile, record_function, ProfilerActivity
 
+import pdb
+
 def precompute_freqs_cis(dim: int, end: int, theta: float = 10000.0) -> torch.Tensor:
     """
     Precompute the frequency tensor for complex exponentials (cis) with given dimensions.
@@ -162,7 +164,7 @@ class Attention(nn.Module):
         self.sdpa = build_attention(model_args.use_flex_attn, model_args.attn_mask_type)
 
         if model_args.ua_opt:
-            self.ua = UAOpt 
+            self.ua = UAOpt
             self.fast_aff_gen = _gen_affinity_scores
             self.flex = flex_attention
         else:
@@ -185,7 +187,7 @@ class Attention(nn.Module):
         recomputing O(N^2) work per callback.
         """
         affs = self.fast_aff_gen(k, src, dest)
-        scale_fix = sqrt(k.shape[-1]) 
+        scale_fix = sqrt(k.shape[-1])
 
         def score_mod(score, b: int, h: int, q_idx: int, k_idx: int):
             return score*scale_fix + affs[b, h, q_idx, k_idx]
@@ -239,22 +241,15 @@ class Attention(nn.Module):
         xv = values.transpose(1, 2).contiguous()  # (bs, n_local_heads, seqlen, head_dim)
         ## Call to UA, extra preprocessing for baseline.
         if self.ua_opt:
-            
+
             ## This is the ua kernel. ##
             output = self.ua(xq, xk, xv, True, 1.3, static_src, static_dest)
 
-
-            ## This is the flex-attention version. ##
-            #score_mod = self.make_universal_score_mod(xk, static_src, static_dest)
-            #output = self.flex(xq, xk, xv, score_mod=score_mod)
-            
-            ## This is just flash-attention. ##
-            #output = self.sdpa(xq,xk,xv)
             output = output.transpose(
                 1, 2
             ).contiguous()  # (bs, seqlen, n_local_heads, head_dim)
             output = output.view(bs, seqlen, -1)
-        else: 
+        else:
             ## This is the baseline. Uses SDPA version. ##
             ## Here we do replication for GQA. ##
             if xq.shape[1] != xk.shape[1]:
@@ -265,10 +260,7 @@ class Attention(nn.Module):
                 static_dest = static_dest.repeat(1, r, 1)
 
             aff_scores = self.fast_aff_gen(xk, static_src, static_dest)
-            with sdp_kernel(SDPBackend.FLASH_ATTENTION):
-                output = F.scaled_dot_product_attention(xq, xk, xv, attn_mask=aff_scores)
-                ## Now, for some reason only this triggers flash-attention. ##
-                #output = F.scaled_dot_product_attention(xq, xk, xv)
+            output = F.scaled_dot_product_attention(xq, xk, xv, attn_mask=aff_scores)
             output = output.transpose(
                 1, 2
             ).contiguous()  # (bs, seqlen, n_local_heads, head_dim)

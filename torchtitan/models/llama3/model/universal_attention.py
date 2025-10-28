@@ -3,8 +3,6 @@ import triton
 import triton.language as tl
 from .affinity_generation import _affinity_bwd, _affinity_fwd
 
-import pdb
-
 def is_hip():
     return triton.runtime.driver.active.get_current_target().backend == "hip"
 
@@ -48,7 +46,7 @@ def _attn_fwd_inner(acc, l_i, m_i, q,  #
         lo, hi = 0, N_CTX
     offsetk_y = offset_y + lo * HEAD_DIM
     offsetv_y = offset_y + lo * HEAD_DIM
-    offseta_y = offsetaffinity_y + lo 
+    offseta_y = offsetaffinity_y + lo
     # loop over k, v and update accumulator
     for start_n in tl.range(lo, hi, BLOCK_N):
         start_n = tl.multiple_of(start_n, BLOCK_N)
@@ -61,8 +59,6 @@ def _attn_fwd_inner(acc, l_i, m_i, q,  #
         qk = tl.dot(q, k)
         qk += aff
         if STAGE == 2:
-            #mask = (offs_m[:, None] >= (start_n + offs_n[None, :])) & ((start_n + offs_n[None, :]) < N_CTX) & (offs_m[:, None] < N_CTX)
-            #qk = qk + tl.where(mask, 0, -1.0e6)
             m_ij = tl.maximum(m_i, tl.max(qk, 1))
             qk -= m_ij[:, None]
         else:
@@ -89,10 +85,6 @@ def _attn_fwd_inner(acc, l_i, m_i, q,  #
         offseta_y += BLOCK_N
     return acc, l_i, m_i
 
-#@triton.autotune(
-#        configs=get_cuda_configs(),
-#        key=["N_CTX", "HEAD_DIM", "FP8_OUTPUT", "warp_specialize"]
-#        )
 @triton.jit
 def _attn_fwd(sm_scale, M,  #
               Z, H, desc_q, desc_k, desc_v, desc_o, desc_affinity,
@@ -184,7 +176,7 @@ def _attn_bwd_dkdv(dk, dv,  #
                    HEAD_DIM: tl.constexpr,  #
                    # Filled in by the wrapper.
                    start_n, start_m, num_steps, MASK):
-    ## Loop over "r"-dimension. 
+    ## Loop over "r"-dimension.
     for q_grp_head in range(Q_H):
         offs_m = start_m + tl.arange(0, BLOCK_M1)
         offs_n = start_n + tl.arange(0, BLOCK_N1)
@@ -201,7 +193,7 @@ def _attn_bwd_dkdv(dk, dv,  #
             # Load m before computing qk to reduce pipeline stall.
             m = tl.load(M + offs_m + (q_grp_head * KV_H * N_CTX), mask=offs_m < N_CTX) ## (BLOCK_M1, )
             affs = tl.trans(
-                tl.load(AFFINITY + offs_m[:, None] * N_CTX + offs_n[None, :], 
+                tl.load(AFFINITY + offs_m[:, None] * N_CTX + offs_n[None, :],
                         mask=(offs_m[:, None] < N_CTX) & (offs_n[None, :] < N_CTX))).to(tl.float32) ## (BLOCK_N1, BLOCK_M1)
             qkT = tl.dot(k, qT) + affs ## (BLOCK_N1, BLOCK_M1)
             pT = tl.math.exp(qkT - m[None, :])
@@ -287,7 +279,7 @@ def _attn_bwd(Q, K, V, AFFINITY, sm_scale,  #
               M, D,
               # shared by Q/K/V/DO.
               stride_z, stride_h, stride_tok, stride_d,  #
-              Q_H, KV_H, N_CTX,  # Q_H * KV_H = Number of Query heads. 
+              Q_H, KV_H, N_CTX,  # Q_H * KV_H = Number of Query heads.
               BLOCK_M1: tl.constexpr,  #
               BLOCK_N1: tl.constexpr,  #
               BLOCK_M2: tl.constexpr,  #
@@ -305,7 +297,7 @@ def _attn_bwd(Q, K, V, AFFINITY, sm_scale,  #
     # offset pointers for batch/head
     K += adj_KV
     V += adj_KV
-    DQ += adj_Q 
+    DQ += adj_Q
     DK += adj_KV
     DV += adj_KV
     AFFINITY += ((bhid // (KV_H * Q_H)) * (KV_H * N_CTX * N_CTX) + (bhid % (KV_H)) * (N_CTX * N_CTX)).to(tl.int64)
@@ -330,8 +322,8 @@ def _attn_bwd(Q, K, V, AFFINITY, sm_scale,  #
         dv = tl.zeros([BLOCK_N1, HEAD_DIM], dtype=tl.float32)
         dk = tl.zeros([BLOCK_N1, HEAD_DIM], dtype=tl.float32)
 
-        ## Adjustment number 2: This should loop over r (Q_head groups). Should selectively launch 
-        ##  only KV_H first blocks. The rest should be predicated off as inner r loop will do the 
+        ## Adjustment number 2: This should loop over r (Q_head groups). Should selectively launch
+        ##  only KV_H first blocks. The rest should be predicated off as inner r loop will do the
         ##  accumulation.
         # load K and V: they stay in SRAM throughout the inner loop.
         k = tl.load(K + offs_n[:, None] * stride_tok + offs_k[None, :] * stride_d, mask=offs_n[:, None] < N_CTX)
@@ -348,7 +340,7 @@ def _attn_bwd(Q, K, V, AFFINITY, sm_scale,  #
                             MASK=True  #
                             )
 
-        start_m = start_n + BLOCK_M1 
+        start_m = start_n + BLOCK_M1
         num_steps = tl.cdiv((N_CTX - start_m), BLOCK_M1)
 
         # Compute dK and dV for non-masked blocks.
@@ -385,7 +377,7 @@ def _attn_bwd(Q, K, V, AFFINITY, sm_scale,  #
     # For causal attention, the q-block iterates backward over keys from the diagonal.
     # The highest key index this query block can see is limited by N_CTX.
     effective_end_n = tl.minimum(start_m + BLOCK_M2, N_CTX)
-    
+
     num_steps = tl.cdiv(effective_end_n, BLOCK_N2)
     dq = _attn_bwd_dq(
         dq, q, K, V, AFFINITY, do, DAFFINITY, m, D,
@@ -461,7 +453,6 @@ class _attention(torch.autograd.Function):
     def backward(ctx, do):
         q, k, v, o, M, static_src, static_dest = ctx.saved_tensors
         do = do.contiguous()
-        assert do.is_contiguous()
         assert q.stride() == do.stride() == o.stride() and k.stride() == v.stride()
         dq = torch.empty_like(q)
         dk = torch.empty_like(k)
@@ -469,11 +460,10 @@ class _attention(torch.autograd.Function):
         BATCH, N_HEAD, N_CTX = q.shape[:3]
         PRE_BLOCK = 128
         NUM_WARPS, NUM_STAGES = 4, 3
-        BLOCK_M1, BLOCK_N1, BLOCK_M2, BLOCK_N2 = 32, 128, 128, 32
+        ## The new tuned block-sizes to reduce shmem consumption. ##
+        BLOCK_M1, BLOCK_N1, BLOCK_M2, BLOCK_N2 = 32, 64, 64, 32
         BLK_SLICE_FACTOR = 2
         PRE_BLOCK = 128
-        ## Remove this strict assertion.
-        #assert N_CTX % PRE_BLOCK == 0
         pre_grid = (triton.cdiv(N_CTX, PRE_BLOCK), BATCH * N_HEAD)
         delta = torch.empty_like(M) ## (batch, qv_heads, N_CTX)
         _attn_bwd_preprocess[pre_grid](
@@ -482,15 +472,11 @@ class _attention(torch.autograd.Function):
             BATCH, N_HEAD, N_CTX,  #
             BLOCK_M=PRE_BLOCK, HEAD_DIM=ctx.HEAD_DIM  #
         )
-        ## Recompute affinity scores. ##
-        ## Turn on autodiff for this. ##
         affinity = _affinity_fwd(k, static_src, static_dest)
-        #with torch.enable_grad():
-        #    affinity = _gen_affinity_scores(k, static_src, static_dest) ## (b, KV_H, N_CTX, N_CTX)
         Q_H = N_HEAD // k.shape[1]
         KV_H = k.shape[1]
         daffinity = torch.zeros(affinity.shape[0], Q_H * KV_H, N_CTX, N_CTX, dtype=affinity.dtype, device=affinity.device)
-        
+
         grid = (triton.cdiv(N_CTX, BLOCK_N1), 1, BATCH * N_HEAD)
         scale = 1.0 / ctx.HEAD_DIM**0.5
         _attn_bwd[grid](
@@ -506,14 +492,11 @@ class _attention(torch.autograd.Function):
             num_warps=NUM_WARPS,  #
             num_stages=NUM_STAGES  #
         )
-        
+
         daffinity = torch.reshape(daffinity, (daffinity.shape[0], Q_H, KV_H, daffinity.shape[2], daffinity.shape[3])).sum(1, keepdim=False)
-        
-        ## Use AOTAutograd for the rest. This is for simplicity and for the sake of moving fast. 
-        ##   TODO(ahangupta): optimize out into triton kernel later.
+
         dk_new, dsrc, ddest = _affinity_bwd(k, static_src, static_dest, daffinity)
-        #dk_new, dsrc, ddest = torch.autograd.grad(affinity, [k, static_src, static_dest], grad_outputs=daffinity)
         dk += dk_new
         return dq, dk, dv, None, None, dsrc, ddest, None
-    
+
 attention = _attention.apply
