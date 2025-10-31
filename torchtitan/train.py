@@ -500,10 +500,10 @@ class Trainer(torch.distributed.checkpoint.stateful.Stateful):
                         self.train_step(data_iterator)
                     else:
                         ## We profile a specific iteraiton to reduce json size. ##
-                        with profile(activities=activities) as prof:
-                            self.train_step(data_iterator)
-                        if torch.distributed.get_rank() == 0:
-                            prof.export_chrome_trace("trace_step_opt.json")
+                        #with profile(activities=activities) as prof:
+                        self.train_step(data_iterator)
+                        #if torch.distributed.get_rank() == 0:
+                        #    prof.export_chrome_trace("trace_step_opt.json")
                 except DataloaderStopIteration:
                     logger.warning("Ran out of data; last step was canceled.")
                     break
