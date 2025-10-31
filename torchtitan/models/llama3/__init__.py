@@ -30,8 +30,11 @@ __all__ = [
 llama3_configs = {
     "debugmodel": TransformerModelArgs(
         #dim=256, n_layers=6, n_heads=16, rope_theta=500000
-        dim=4096, n_layers=6, n_heads=32, n_kv_heads=8, rope_theta=500000
+        #dim=4096, n_layers=6, n_heads=32, n_kv_heads=8, rope_theta=500000
         #dim=1024, n_layers=32, n_heads=16, n_kv_heads=4, rope_theta=500000 ## This is Davis' config.
+        ## Davis' config.
+        #dim=1600, n_layers=18, n_heads=20, n_kv_heads=5, rope_theta=500000
+        dim=1280, n_layers=18, n_heads=16, n_kv_heads=4, rope_theta=500000
     ),
     "debugmodel_flex_attn": TransformerModelArgs(
         dim=256,

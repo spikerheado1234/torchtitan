@@ -10,7 +10,7 @@
 import torch
 import torch.nn.functional as F
 from torch import nn
-from math import log, sqrt
+from math import log, sqrt, log2, ceil
 
 from torchtitan.models.attention import build_attention, init_attention_mask
 from torchtitan.protocols.train_spec import ModelProtocol
@@ -243,7 +243,8 @@ class Attention(nn.Module):
         if self.ua_opt:
 
             ## This is the ua kernel. Returns a (output, last row of decay) tuple. ##
-            output, _ = self.ua(xq, xk, xv, True, 1.3, static_src, static_dest)
+            #output, _ = self.ua(xq, xk, xv, True, 1.3, static_src, static_dest)
+            output = self.ua(xq, xk, xv, True, 1.3, static_src, static_dest)
 
             output = output.transpose(
                 1, 2
@@ -258,9 +259,15 @@ class Attention(nn.Module):
                 xv = xv.repeat(1, r, 1, 1)
                 static_src = static_src.repeat(1, r, 1)
                 static_dest = static_dest.repeat(1, r, 1)
-
+            ## Some custom logic to pad head-dim for non-two elements for fast_aff_gen as well. ##
+            pow_two = int(ceil(log2(xk.shape[-1])))
+            pad_amt = (2**pow_two) - xk.shape[-1]
+            HEAD_DIM = xk.shape[-1]
+            xk = F.pad(xk, (0, pad_amt), "constant", 0)
+            xq = F.pad(xq, (0, pad_amt), "constant", 0)
+            xv = F.pad(xv, (0, pad_amt), "constant", 0)
             aff_scores = self.fast_aff_gen(xk, static_src, static_dest)
-            output = F.scaled_dot_product_attention(xq, xk, xv, attn_mask=aff_scores)
+            output = F.scaled_dot_product_attention(xq, xk, xv, attn_mask=aff_scores)[:, :, :, :HEAD_DIM]
             output = output.transpose(
                 1, 2
             ).contiguous()  # (bs, seqlen, n_local_heads, head_dim)
