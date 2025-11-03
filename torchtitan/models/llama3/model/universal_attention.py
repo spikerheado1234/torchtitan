@@ -402,7 +402,7 @@ class _attention(torch.autograd.Function):
             assert 2**pow_two <= 256, 'Head hidden dim until 256 supported only!'
             pad_amt = (2**pow_two)-HEAD_DIM_K
             q = F.pad(q, (0, pad_amt), "constant", 0)
-            k = F.pad(k, (0, pad_amt), "constant", 0)
+            k = F.pad(k, (0, pad_amt), "constant", 0).requires_grad_(True)
             v = F.pad(v, (0, pad_amt), "constant", 0)
 
         assert q.shape[-1] in {16, 32, 64, 128, 256}, f'head_dim {q.shape[-1]} must be in [16, 32, 64, 128, 256]'
@@ -419,8 +419,8 @@ class _attention(torch.autograd.Function):
         desc_o = o
 
         ## Here, we launch an affinity matrix calculation kernel to simplify implementation. ##
-        desc_affinity = _affinity_fwd(k, static_src, static_dest)
-        #desc_affinity = _gen_affinity_scores(k, static_src, static_dest)
+        #desc_affinity = _affinity_fwd(k, static_src, static_dest)
+        desc_affinity = _gen_affinity_scores(k, static_src, static_dest)
 
         ## Specialize to this blk size for reasonable performance. ##
         BLOCK_M=128
@@ -494,9 +494,9 @@ class _attention(torch.autograd.Function):
             BLOCK_M=PRE_BLOCK, HEAD_DIM=do.shape[-1]  #
         )
         ## Recompute affinity scores. ##
-        affinity = _affinity_fwd(k, static_src, static_dest)
-        #with torch.enable_grad():
-        #    affinity = _gen_affinity_scores(k, static_src, static_dest)
+        #affinity = _affinity_fwd(k, static_src, static_dest)
+        with torch.enable_grad():
+            affinity = _gen_affinity_scores(k, static_src, static_dest)
         daffinity = torch.zeros(affinity.shape[0], Q_H * KV_H, N_CTX, N_CTX, dtype=affinity.dtype, device=affinity.device)
 
         grid = (triton.cdiv(N_CTX, BLOCK_N1), 1, BATCH * N_HEAD)
@@ -517,8 +517,8 @@ class _attention(torch.autograd.Function):
 
         daffinity = torch.reshape(daffinity, (daffinity.shape[0], Q_H, KV_H, daffinity.shape[2], daffinity.shape[3])).sum(1, keepdim=False)
 
-        dk_new, dsrc, ddest = _affinity_bwd(k, static_src, static_dest, daffinity)
-        #dk_new, dsrc, ddest = torch.autograd.grad(affinity, [k, static_src, static_dest], grad_outputs=daffinity)
+        #dk_new, dsrc, ddest = _affinity_bwd(k, static_src, static_dest, daffinity)
+        dk_new, dsrc, ddest = torch.autograd.grad(affinity, [k, static_src, static_dest], grad_outputs=daffinity)
         dk += dk_new
         return dq[:, :, :, :ctx.HEAD_DIM], dk[:,:,:,:ctx.HEAD_DIM], dv[:,:,:,:ctx.HEAD_DIM], None, None, dsrc, ddest, None
 
