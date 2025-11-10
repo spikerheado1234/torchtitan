@@ -18,7 +18,7 @@ from torch.nn.attention.flex_attention import flex_attention
 import torch.nn.functional as F
 
 from .args import TransformerModelArgs
-from .universal_attention import attention as UAOpt
+from .universal_attention import attention as UAOpt, _gen_affinity_scores as GenAffTorch
 from .ua_baseline import UniversalAttention, SMVecMatMul
 from .affinity_generation import _gen_affinity_scores
 from torch.backends.cuda import sdp_kernel, SDPBackend
@@ -168,7 +168,8 @@ class Attention(nn.Module):
             self.fast_aff_gen = _gen_affinity_scores
             self.flex = flex_attention
         else:
-            self.fast_aff_gen = _gen_affinity_scores
+            #self.fast_aff_gen = _gen_affinity_scores
+            self.fast_aff_gen = GenAffTorch
 
     def init_weights(self, init_std: float):
         for linear in (self.wq, self.wk, self.wv, self.wstatic):
@@ -241,6 +242,23 @@ class Attention(nn.Module):
         xv = values.transpose(1, 2).contiguous()  # (bs, n_local_heads, seqlen, head_dim)
         ## Call to UA, extra preprocessing for baseline.
         if self.ua_opt:
+
+            ## This is for debugging an ablation only. ##
+            #if xq.shape[1] != xk.shape[1]:
+            #    r = xq.shape[1] // xk.shape[1]
+            #    xk = xk.repeat(1, r, 1, 1)
+            #    xv = xv.repeat(1, r, 1, 1)
+            #    static_src = static_src.repeat(1, r, 1)
+            #    static_dest = static_dest.repeat(1, r, 1)
+            ### Some custom logic to pad head-dim for non-two elements for fast_aff_gen as well. ##
+            #pow_two = int(ceil(log2(xk.shape[-1])))
+            #pad_amt = (2**pow_two) - xk.shape[-1]
+            #HEAD_DIM = xk.shape[-1]
+            #xk = F.pad(xk, (0, pad_amt), "constant", 0)
+            #xq = F.pad(xq, (0, pad_amt), "constant", 0)
+            #xv = F.pad(xv, (0, pad_amt), "constant", 0)
+            #aff_scores = self.fast_aff_gen(xk, static_src, static_dest)
+            #output = F.scaled_dot_product_attention(xq, xk, xv, attn_mask=aff_scores)[:, :, :, :HEAD_DIM]
 
             ## This is the ua kernel. Returns a (output, last row of decay) tuple. ##
             #output, _ = self.ua(xq, xk, xv, True, 1.3, static_src, static_dest)
